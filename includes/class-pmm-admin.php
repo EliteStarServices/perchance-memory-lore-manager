@@ -60,7 +60,7 @@ class PMM_Admin {
 			$drop_sequences_default = [];
 		}
 		$drop_sequences_text = implode("\n", $drop_sequences_default);
-		$include_entity_report_default = get_option('pmm_include_entity_report', '0') === '1';
+		$include_entity_report_default = true;
 		$entity_related_match_mode = get_option('pmm_entity_related_match_mode', 'normal');
 		if (!in_array($entity_related_match_mode, ['normal', 'strict'], true)) {
 			$entity_related_match_mode = 'normal';
@@ -489,13 +489,9 @@ class PMM_Admin {
 							</td>
 						</tr>
 						<tr>
-								<th scope="row"><?php esc_html_e('Entity Lists Visibility', 'perchance-memory-manager'); ?></th>
+							<th scope="row"><?php esc_html_e('Entity Lists Visibility', 'perchance-memory-manager'); ?></th>
 							<td>
-								<label for="pmm_include_entity_report">
-									<input type="checkbox" id="pmm_include_entity_report" name="pmm_include_entity_report" value="1" <?php checked($include_entity_report_default); ?>>
-										<?php esc_html_e('Show full entity and newly-created lists in results panel', 'perchance-memory-manager'); ?>
-								</label>
-									<p class="description"><?php esc_html_e('Entity Review and Similarity tools remain available either way. This only controls the large list displays.', 'perchance-memory-manager'); ?></p>
+								<p><?php esc_html_e('Entity lists are always shown in the results panel. Use the Entity Review area to collapse or expand the sections you want to inspect.', 'perchance-memory-manager'); ?></p>
 							</td>
 						</tr>
 						<tr>
@@ -550,7 +546,6 @@ class PMM_Admin {
 						mode: document.getElementById('pmm_mode'),
 						format: document.getElementById('pmm_format'),
 						dropSequences: document.getElementById('pmm_drop_sequences'),
-						includeEntityReport: document.getElementById('pmm_include_entity_report'),
 						entityRelatedMatchMode: document.getElementById('pmm_entity_related_match_mode'),
 						similarityThresholdCharacters: document.getElementById('pmm_similarity_threshold_characters'),
 						similarityThresholdOrganizations: document.getElementById('pmm_similarity_threshold_organizations'),
@@ -582,7 +577,7 @@ class PMM_Admin {
 							upsertHidden(form, 'pmm_mode', source.mode ? source.mode.value : 'balanced');
 							upsertHidden(form, 'pmm_format', source.format ? source.format.value : 'md');
 							upsertHidden(form, 'pmm_drop_sequences', source.dropSequences ? source.dropSequences.value : '');
-							upsertHidden(form, 'pmm_include_entity_report', source.includeEntityReport && source.includeEntityReport.checked ? '1' : '0');
+							upsertHidden(form, 'pmm_include_entity_report', '1');
 							upsertHidden(form, 'pmm_entity_related_match_mode', source.entityRelatedMatchMode ? source.entityRelatedMatchMode.value : 'normal');
 							upsertHidden(form, 'pmm_similarity_threshold_characters', source.similarityThresholdCharacters ? source.similarityThresholdCharacters.value : '0.62');
 							upsertHidden(form, 'pmm_similarity_threshold_organizations', source.similarityThresholdOrganizations ? source.similarityThresholdOrganizations.value : '0.70');
@@ -1379,7 +1374,7 @@ class PMM_Admin {
 										<?php if ($show_entity_lists) : ?>
 											<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
 										<?php else : ?>
-											<p class="description"><?php esc_html_e('Hidden to keep output compact. Enable "Entity Lists Visibility" in Upload and Process to show this list.', 'perchance-memory-manager'); ?></p>
+											<p class="description"><?php esc_html_e('Entity lists are always shown here. Use the review controls below to focus on specific sections when needed.', 'perchance-memory-manager'); ?></p>
 										<?php endif; ?>
 									</div>
 								</details>
@@ -1412,7 +1407,7 @@ class PMM_Admin {
 										<?php if ($show_entity_lists) : ?>
 											<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
 										<?php else : ?>
-											<p class="description"><?php esc_html_e('Hidden to keep output compact. Enable "Entity Lists Visibility" in Upload and Process to show this list.', 'perchance-memory-manager'); ?></p>
+											<p class="description"><?php esc_html_e('Entity lists are always shown here. Use the review controls below to focus on specific sections when needed.', 'perchance-memory-manager'); ?></p>
 										<?php endif; ?>
 									</div>
 								</details>
