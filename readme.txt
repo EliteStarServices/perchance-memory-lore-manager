@@ -50,3 +50,7 @@ Yes. Lines beginning with `(AI:)` in Notes/New Entries are preserved.
 
 = 0.1.0 =
 * Initial starter version.
+
+== Development Workflow ==
+
+See `MAINTENANCE.md` for the branch, commit, tag, and rollback workflow used for this repository.
