@@ -1,0 +1,18 @@
+.pmm-wrap .pmm-card {
+	background: #fff;
+	border: 1px solid #dcdcde;
+	padding: 20px;
+	margin-top: 20px;
+	max-width: 1100px;
+	box-shadow: 0 1px 1px rgba(0,0,0,0.04);
+}
+
+.pmm-wrap .pmm-preview {
+	width: 100%;
+	min-height: 420px;
+	font-family: Consolas, Monaco, monospace;
+}
+
+.pmm-wrap .pmm-stats {
+	margin: 0 0 1em 1.2em;
+}
