@@ -114,7 +114,7 @@ class PMM_Plugin {
 		$mode = isset($_POST['pmm_mode']) ? sanitize_text_field(wp_unslash($_POST['pmm_mode'])) : 'balanced';
 		$format = isset($_POST['pmm_format']) ? sanitize_text_field(wp_unslash($_POST['pmm_format'])) : 'md';
 		$drop_sequences = isset($_POST['pmm_drop_sequences']) ? $this->sanitize_drop_sequences(wp_unslash($_POST['pmm_drop_sequences'])) : [];
-		$include_entity_report = !empty($_POST['pmm_include_entity_report']);
+		$include_entity_report = true;
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request($_POST);
 		$questionable_settings = $this->read_questionable_settings_from_request($_POST);
 		$entity_related_match_mode = isset($_POST['pmm_entity_related_match_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_entity_related_match_mode'])) : 'normal';
@@ -122,7 +122,7 @@ class PMM_Plugin {
 			$entity_related_match_mode = 'normal';
 		}
 		update_option('pmm_drop_sequences', $drop_sequences, false);
-		update_option('pmm_include_entity_report', $include_entity_report ? '1' : '0', false);
+		update_option('pmm_include_entity_report', '1', false);
 		update_option('pmm_similarity_thresholds', $similarity_thresholds, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
@@ -275,7 +275,7 @@ class PMM_Plugin {
 			}
 		}
 
-		$include_entity_report = isset($_POST['pmm_include_entity_report']) ? !empty($_POST['pmm_include_entity_report']) : (get_option('pmm_include_entity_report', '0') === '1');
+		$include_entity_report = true;
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request(isset($_POST) ? $_POST : null);
 		$questionable_settings = $this->read_questionable_settings_from_request(isset($_POST) ? $_POST : null);
 
@@ -287,7 +287,7 @@ class PMM_Plugin {
 		update_option('pmm_last_mode', $mode, false);
 		update_option('pmm_last_format', $format, false);
 		update_option('pmm_drop_sequences', $drop_sequences, false);
-		update_option('pmm_include_entity_report', $include_entity_report ? '1' : '0', false);
+		update_option('pmm_include_entity_report', '1', false);
 		update_option('pmm_similarity_thresholds', $similarity_thresholds, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
