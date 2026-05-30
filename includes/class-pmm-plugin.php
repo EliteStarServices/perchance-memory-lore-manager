@@ -10,8 +10,16 @@ class PMM_Plugin {
 	private $dedupe_batch_items = 60;
 	private $batch_time_budget_seconds = 30;
 	private $version_retention = 10;
+	private $similarity_max_pairs_per_run = 50000;
+	private $similarity_max_entities_per_section = 500;
 
 	public function init() {
+		$this->line_batch_size = max(300, (int) apply_filters('pmm_line_batch_size', $this->line_batch_size));
+		$this->dedupe_batch_items = max(10, (int) apply_filters('pmm_dedupe_batch_items', $this->dedupe_batch_items));
+		$this->batch_time_budget_seconds = max(8, min(45, (int) apply_filters('pmm_batch_time_budget_seconds', $this->batch_time_budget_seconds)));
+		$this->similarity_max_pairs_per_run = max(1000, (int) apply_filters('pmm_similarity_max_pairs_per_run', $this->similarity_max_pairs_per_run));
+		$this->similarity_max_entities_per_section = max(50, (int) apply_filters('pmm_similarity_max_entities_per_section', $this->similarity_max_entities_per_section));
+
 		add_action('admin_menu', [$this, 'register_admin']);
 		add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
 		add_action('admin_post_pmm_process_upload', [$this, 'handle_upload']);
@@ -798,7 +806,7 @@ class PMM_Plugin {
 					$target_entity = trim((string) $original_entity);
 				}
 
-				$changed = $this->move_entry_in_cleaned(
+				$entry_changed = $this->move_entry_in_cleaned(
 					$cleaned,
 					$original_section,
 					$original_entity,
@@ -808,7 +816,7 @@ class PMM_Plugin {
 					$entry
 				);
 
-				if ($changed) {
+				if ($entry_changed) {
 					$cleaned_changed = true;
 					++$changed;
 					++$updated_entries;
@@ -1368,15 +1376,53 @@ class PMM_Plugin {
 	}
 
 	private function get_job_state($job_id) {
-		return get_transient($this->get_job_key($job_id));
+		$legacy = get_transient($this->get_job_key($job_id));
+		if (is_array($legacy) && isset($legacy['stage'])) {
+			return $legacy;
+		}
+
+		$state_path = $this->build_job_state_path($job_id);
+		if (!file_exists($state_path)) {
+			return [];
+		}
+
+		if (false === $legacy) {
+			@unlink($state_path);
+			return [];
+		}
+
+		$raw = @file_get_contents($state_path);
+		if (!is_string($raw) || $raw === '') {
+			return [];
+		}
+
+		$state = @unserialize($raw);
+		if (!is_array($state)) {
+			return [];
+		}
+
+		return $state;
 	}
 
 	private function save_job_state($job_id, $state) {
+		$state_path = $this->build_job_state_path($job_id);
+		$state_dir = dirname($state_path);
+		$serialized = serialize($state);
+
+		if (wp_mkdir_p($state_dir) && false !== @file_put_contents($state_path, $serialized, LOCK_EX)) {
+			set_transient($this->get_job_key($job_id), 1, $this->job_ttl);
+			return;
+		}
+
 		set_transient($this->get_job_key($job_id), $state, $this->job_ttl);
 	}
 
 	private function delete_job_state($job_id) {
 		delete_transient($this->get_job_key($job_id));
+		$state_path = $this->build_job_state_path($job_id);
+		if (file_exists($state_path)) {
+			@unlink($state_path);
+		}
 	}
 
 	private function get_job_key($job_id) {
@@ -1390,6 +1436,11 @@ class PMM_Plugin {
 	private function build_job_source_path($job_id, $ext) {
 		$uploads = wp_upload_dir();
 		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $job_id . '-source.' . $ext;
+	}
+
+	private function build_job_state_path($job_id) {
+		$uploads = wp_upload_dir();
+		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $job_id . '-state.bin';
 	}
 
 	private function count_file_lines($path) {
@@ -2677,7 +2728,9 @@ class PMM_Plugin {
 	private function build_entity_report_payload($state) {
 		$final_entities = $this->extract_entities_by_section($state['cleaned']);
 		$new_entities = isset($state['entity_report']['new_entities']) && is_array($state['entity_report']['new_entities']) ? $state['entity_report']['new_entities'] : [];
-		$similar_candidates = $this->build_similar_entity_candidates($final_entities);
+		$similar_total_found = 0;
+		$similar_truncated = false;
+		$similar_candidates = $this->build_similar_entity_candidates($final_entities, $similar_total_found, $similar_truncated);
 		$questionable_total_found = 0;
 		$questionable_entries = $this->build_questionable_entry_candidates($state['cleaned'], $questionable_total_found);
 
@@ -2685,6 +2738,8 @@ class PMM_Plugin {
 			'entities' => $final_entities,
 			'new_entities' => $new_entities,
 			'similar_candidates' => $similar_candidates,
+			'similar_candidates_total_found' => (int) $similar_total_found,
+			'similar_candidates_truncated' => $similar_truncated ? 1 : 0,
 			'questionable_entries' => $questionable_entries,
 			'questionable_entries_total_found' => (int) $questionable_total_found,
 		];
@@ -2717,7 +2772,7 @@ class PMM_Plugin {
 		return $out;
 	}
 
-	private function build_similar_entity_candidates($entity_groups) {
+	private function build_similar_entity_candidates($entity_groups, &$total_found = 0, &$was_truncated = false) {
 		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems'];
 		$ignored = get_option('pmm_similarity_ignored_pairs', []);
 		if (!is_array($ignored)) {
@@ -2730,13 +2785,27 @@ class PMM_Plugin {
 		}
 
 		$candidates = [];
+		$pairs_scanned = 0;
+		$max_pairs = max(1000, (int) $this->similarity_max_pairs_per_run);
+		$max_entities = max(50, (int) $this->similarity_max_entities_per_section);
+		$was_truncated = false;
 
 		foreach ($sections as $section) {
 			$names = isset($entity_groups[$section]) && is_array($entity_groups[$section]) ? array_values($entity_groups[$section]) : [];
+			if (count($names) > $max_entities) {
+				$names = array_slice($names, 0, $max_entities);
+				$was_truncated = true;
+			}
 			$threshold = $this->similarity_threshold_for_section($section);
 			$count = count($names);
 			for ($i = 0; $i < $count; $i++) {
 				for ($j = $i + 1; $j < $count; $j++) {
+					if ($pairs_scanned >= $max_pairs) {
+						$was_truncated = true;
+						break 3;
+					}
+					++$pairs_scanned;
+
 					$a = (string) $names[$i];
 					$b = (string) $names[$j];
 
@@ -2778,6 +2847,8 @@ class PMM_Plugin {
 			}
 			return ((float) $x['score'] > (float) $y['score']) ? -1 : 1;
 		});
+
+		$total_found = count($candidates);
 
 		return array_slice($candidates, 0, 120);
 	}
@@ -2944,7 +3015,7 @@ class PMM_Plugin {
 
 		$total_found = count($candidates);
 
-		return array_slice($candidates, 0, 200);
+		return array_slice($candidates, 0, 120);
 	}
 
 	private function questionable_entry_flags($entry, $settings) {

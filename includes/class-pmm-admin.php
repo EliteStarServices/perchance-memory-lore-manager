@@ -1365,24 +1365,19 @@ class PMM_Admin {
 
 					<?php if (!empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
 						<details style="margin-top:12px;">
-							<summary><strong><?php esc_html_e('Entity Report', 'perchance-memory-manager'); ?></strong></summary>
+							<summary><strong><?php esc_html_e('Entity Review Functions', 'perchance-memory-manager'); ?></strong></summary>
 							<div style="margin-top:10px;">
-								<?php $show_entity_lists = !empty($data['stats']['show_entity_lists']); ?>
 								<details style="margin:12px 0;" open>
 									<summary><strong><?php esc_html_e('New Entities Added During Processing', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
-										<?php if ($show_entity_lists) : ?>
-											<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
-										<?php else : ?>
-											<p class="description"><?php esc_html_e('Entity lists are always shown here. Use the review controls below to focus on specific sections when needed.', 'perchance-memory-manager'); ?></p>
-										<?php endif; ?>
+										<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
 									</div>
 								</details>
 
 								<details style="margin:12px 0;">
 									<summary><strong><?php esc_html_e('Similar Entity Detection', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
-										<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? []); ?>
+										<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? [], isset($data['entity_report']['similar_candidates_total_found']) ? (int) $data['entity_report']['similar_candidates_total_found'] : null, !empty($data['entity_report']['similar_candidates_truncated'])); ?>
 									</div>
 								</details>
 
@@ -1404,11 +1399,7 @@ class PMM_Admin {
 								<details style="margin:12px 0;">
 									<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
-										<?php if ($show_entity_lists) : ?>
-											<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
-										<?php else : ?>
-											<p class="description"><?php esc_html_e('Entity lists are always shown here. Use the review controls below to focus on specific sections when needed.', 'perchance-memory-manager'); ?></p>
-										<?php endif; ?>
+										<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
 									</div>
 								</details>
 							</div>
@@ -1546,14 +1537,23 @@ class PMM_Admin {
 		echo '</ul>';
 	}
 
-	private function render_similarity_review($candidates) {
+	private function render_similarity_review($candidates, $total_found = null, $was_truncated = false) {
 		if (empty($candidates) || !is_array($candidates)) {
 			echo '<p>' . esc_html__('No similar entity pairs detected.', 'perchance-memory-manager') . '</p>';
 			return;
 		}
 
 		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
-		echo '<p>' . esc_html(sprintf(__('Detected %d potentially similar pairs. Review and save decisions.', 'perchance-memory-manager'), count($candidates))) . '</p>';
+		$shown_count = count($candidates);
+		$resolved_total = is_numeric($total_found) ? max(0, (int) $total_found) : $shown_count;
+		if ($resolved_total > $shown_count) {
+			echo '<p>' . esc_html(sprintf(__('Detected %1$d potentially similar pairs, showing first %2$d. Review and save decisions.', 'perchance-memory-manager'), $resolved_total, $shown_count)) . '</p>';
+		} else {
+			echo '<p>' . esc_html(sprintf(__('Detected %d potentially similar pairs. Review and save decisions.', 'perchance-memory-manager'), $shown_count)) . '</p>';
+		}
+		if ($was_truncated) {
+			echo '<p class="description" style="color:#b45309;">' . esc_html__('Similarity scanning was capped for performance on this large dataset. Results shown here are a high-confidence subset.', 'perchance-memory-manager') . '</p>';
+		}
 		echo '<p class="description">' . esc_html__('Section and entity names are editable. Keep separate hides the original suggestion pair; merge actions save alias rules for future runs.', 'perchance-memory-manager') . '</p>';
 		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
 		wp_nonce_field('pmm_apply_similarity_review');
