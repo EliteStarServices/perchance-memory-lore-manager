@@ -1,0 +1,14 @@
+root = true
+
+[*.{php,txt,md,yml,yaml}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.php]
+indent_style = tab
+
+[*.{txt,md,yml,yaml}]
+indent_style = space
+indent_size = 2
