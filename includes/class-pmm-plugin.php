@@ -1368,11 +1368,38 @@ class PMM_Plugin {
 	}
 
 	private function build_output_filename($original, $format) {
-		$base = pathinfo($original, PATHINFO_FILENAME);
-		$base = sanitize_file_name($base);
+		$base = $this->normalized_source_base_name($original);
 		$extension = ($format === 'txt') ? 'txt' : 'md';
 
 		return $base . '-cleaned.' . $extension;
+	}
+
+	private function normalized_source_base_name($source_filename) {
+		$base = pathinfo((string) $source_filename, PATHINFO_FILENAME);
+		$base = sanitize_file_name($base);
+		if ($base === '') {
+			return 'memory';
+		}
+
+		$patterns = [
+			'/-cleaned$/i',
+			'/-v\d{8}-\d{6}-[A-Za-z0-9]+$/',
+		];
+
+		$changed = true;
+		while ($changed && $base !== '') {
+			$changed = false;
+			foreach ($patterns as $pattern) {
+				$next = preg_replace($pattern, '', $base);
+				if (is_string($next) && $next !== $base) {
+					$base = $next;
+					$changed = true;
+				}
+			}
+		}
+
+		$base = trim($base, '-_ ');
+		return $base !== '' ? $base : 'memory';
 	}
 
 	private function get_job_state($job_id) {
@@ -1426,21 +1453,26 @@ class PMM_Plugin {
 	}
 
 	private function get_job_key($job_id) {
-		return 'pmm_job_' . get_current_user_id() . '_' . $job_id;
+		return 'pmm_job_' . get_current_user_id() . '_' . $this->normalize_job_id($job_id);
 	}
 
 	private function generate_job_id() {
-		return 'job_' . wp_generate_password(10, false, false);
+		return 'job_' . strtolower(wp_generate_password(10, false, false));
 	}
 
 	private function build_job_source_path($job_id, $ext) {
 		$uploads = wp_upload_dir();
-		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $job_id . '-source.' . $ext;
+		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $this->normalize_job_id($job_id) . '-source.' . $ext;
 	}
 
 	private function build_job_state_path($job_id) {
 		$uploads = wp_upload_dir();
-		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $job_id . '-state.bin';
+		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $this->normalize_job_id($job_id) . '-state.bin';
+	}
+
+	private function normalize_job_id($job_id) {
+		$normalized = sanitize_key((string) $job_id);
+		return $normalized !== '' ? $normalized : 'job_unknown';
 	}
 
 	private function count_file_lines($path) {
@@ -1750,14 +1782,10 @@ class PMM_Plugin {
 			return [];
 		}
 
-		$base = pathinfo((string) $source_filename, PATHINFO_FILENAME);
-		$base = sanitize_file_name($base);
-		if ($base === '') {
-			$base = 'memory';
-		}
+		$base = $this->normalized_source_base_name($source_filename);
 
 		$ext = ($format === 'txt') ? 'txt' : 'md';
-		$filename = $base . '-v' . gmdate('Ymd-His') . '-' . wp_generate_password(4, false, false) . '.' . $ext;
+		$filename = $base . '-v' . gmdate('Ymd-His') . '-' . wp_generate_password(2, false, false) . '.' . $ext;
 		$path = trailingslashit($dir) . $filename;
 
 		if (file_put_contents($path, (string) $content) === false) {

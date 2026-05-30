@@ -53,7 +53,7 @@ class PMM_Admin {
 		$global_scope = isset($_GET['pmm_global_scope']) ? sanitize_key(wp_unslash($_GET['pmm_global_scope'])) : 'both';
 		$job_id = isset($_GET['pmm_job']) ? sanitize_key(wp_unslash($_GET['pmm_job'])) : '';
 		$processing = isset($_GET['pmm_processing']) ? (int) $_GET['pmm_processing'] : 0;
-		$job = $job_id ? get_transient('pmm_job_' . get_current_user_id() . '_' . $job_id) : null;
+		$job = $job_id ? $this->get_batch_job_state($job_id) : null;
 		$progress = $this->build_progress($job);
 		$drop_sequences_default = get_option('pmm_drop_sequences', []);
 		if (!is_array($drop_sequences_default)) {
@@ -1512,6 +1512,46 @@ class PMM_Admin {
 			'label' => __('Finishing', 'perchance-memory-manager'),
 			'detail' => __('Finalizing the batch job.', 'perchance-memory-manager'),
 		];
+	}
+
+	private function get_batch_job_state($job_id) {
+		$job_key = 'pmm_job_' . get_current_user_id() . '_' . $this->normalize_job_id($job_id);
+		$legacy = get_transient($job_key);
+		if (is_array($legacy) && isset($legacy['stage'])) {
+			return $legacy;
+		}
+
+		$state_path = $this->build_job_state_path($job_id);
+		if (!file_exists($state_path)) {
+			return null;
+		}
+
+		if (false === $legacy) {
+			@unlink($state_path);
+			return null;
+		}
+
+		$raw = @file_get_contents($state_path);
+		if (!is_string($raw) || $raw === '') {
+			return null;
+		}
+
+		$state = @unserialize($raw);
+		if (!is_array($state)) {
+			return null;
+		}
+
+		return $state;
+	}
+
+	private function build_job_state_path($job_id) {
+		$uploads = wp_upload_dir();
+		return trailingslashit($uploads['basedir']) . 'pmm-jobs/' . $this->normalize_job_id($job_id) . '-state.bin';
+	}
+
+	private function normalize_job_id($job_id) {
+		$normalized = sanitize_key((string) $job_id);
+		return $normalized !== '' ? $normalized : 'job_unknown';
 	}
 
 	private function render_entity_groups($groups) {
