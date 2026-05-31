@@ -659,7 +659,9 @@ class PMM_Plugin {
 		$removals = $this->normalize_entity_rule_items($removals);
 
 		$applied = 0;
+		$reviewed = 0;
 		$output_rule_changes = 0;
+		$expected_count = isset($_POST['pmm_entity_expected_count']) ? max(0, (int) wp_unslash((string) $_POST['pmm_entity_expected_count'])) : 0;
 		foreach ($rows as $row) {
 			if (!is_array($row)) {
 				continue;
@@ -672,6 +674,8 @@ class PMM_Plugin {
 			if ($section === '' || $name === '') {
 				continue;
 			}
+
+			++$reviewed;
 
 			$key = $this->build_entity_rule_key($section, $name);
 
@@ -721,6 +725,9 @@ class PMM_Plugin {
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
 			'pmm_entity_saved' => (string) $applied,
+			'pmm_entity_reviewed' => (string) $reviewed,
+			'pmm_entity_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
+			'pmm_entity_expected_count' => (string) $expected_count,
 		], admin_url('admin.php')));
 		exit;
 	}

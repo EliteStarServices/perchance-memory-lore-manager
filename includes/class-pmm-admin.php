@@ -39,6 +39,9 @@ class PMM_Admin {
 		$questionable_truncated = isset($_GET['pmm_questionable_truncated']) ? (int) $_GET['pmm_questionable_truncated'] : 0;
 		$questionable_expected_count = isset($_GET['pmm_questionable_expected_count']) ? (int) $_GET['pmm_questionable_expected_count'] : 0;
 		$hidden_updated = isset($_GET['pmm_hidden_updated']) ? (int) $_GET['pmm_hidden_updated'] : -1;
+		$entity_reviewed = isset($_GET['pmm_entity_reviewed']) ? (int) $_GET['pmm_entity_reviewed'] : -1;
+		$entity_truncated = isset($_GET['pmm_entity_truncated']) ? (int) $_GET['pmm_entity_truncated'] : 0;
+		$entity_expected_count = isset($_GET['pmm_entity_expected_count']) ? (int) $_GET['pmm_entity_expected_count'] : 0;
 		$raw_previewed = isset($_GET['pmm_raw_previewed']) ? (int) $_GET['pmm_raw_previewed'] : -1;
 		$raw_staged = isset($_GET['pmm_raw_staged']) ? (int) $_GET['pmm_raw_staged'] : -1;
 		$raw_cleared = isset($_GET['pmm_raw_cleared']) ? (int) $_GET['pmm_raw_cleared'] : 0;
@@ -325,6 +328,10 @@ class PMM_Admin {
 
 			<?php if ($entity_saved >= 0) : ?>
 				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Saved %d entity review decisions.', 'perchance-memory-manager'), $entity_saved)); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ($entity_truncated && $entity_expected_count > 0) : ?>
+				<div class="notice notice-warning"><p><?php echo esc_html(sprintf(__('Only %1$d of %2$d entity-review rows were received when saving. This usually means PHP input limits truncated the form submission (for example, max_input_vars). Use the page controls in Entity Review to process in smaller chunks.', 'perchance-memory-manager'), max(0, $entity_reviewed), $entity_expected_count)); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($hidden_updated >= 0) : ?>
@@ -1397,6 +1404,13 @@ class PMM_Admin {
 								</details>
 
 								<details style="margin:12px 0;">
+									<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
+									<div style="margin-top:10px;">
+										<?php $this->render_alias_rules_manager(); ?>
+									</div>
+								</details>
+
+								<details style="margin:12px 0;">
 									<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
 										<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
@@ -1595,9 +1609,20 @@ class PMM_Admin {
 			echo '<p class="description" style="color:#b45309;">' . esc_html__('Similarity scanning was capped for performance on this large dataset. Results shown here are a high-confidence subset.', 'perchance-memory-manager') . '</p>';
 		}
 		echo '<p class="description">' . esc_html__('Section and entity names are editable. Keep separate hides the original suggestion pair; merge actions save alias rules for future runs.', 'perchance-memory-manager') . '</p>';
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-similarity-review-form">';
 		wp_nonce_field('pmm_apply_similarity_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_similarity_review">';
+		echo '<p style="margin:12px 0 8px;">';
+		echo '<label for="pmm-similarity-bulk-action"><strong>' . esc_html__('Bulk action for all rows', 'perchance-memory-manager') . '</strong></label> ';
+		echo '<select id="pmm-similarity-bulk-action" class="regular-text pmm-bulk-action">';
+		echo '<option value="">' . esc_html__('Choose an action', 'perchance-memory-manager') . '</option>';
+		echo '<option value="merge_to_suggested">' . esc_html__('Merge using Canonical Target field', 'perchance-memory-manager') . '</option>';
+		echo '<option value="merge_to_a">' . esc_html__('Merge B into A', 'perchance-memory-manager') . '</option>';
+		echo '<option value="merge_to_b">' . esc_html__('Merge A into B', 'perchance-memory-manager') . '</option>';
+		echo '<option value="keep">' . esc_html__('Keep separate (hide this suggestion)', 'perchance-memory-manager') . '</option>';
+		echo '</select> ';
+		echo '<button type="button" class="button pmm-apply-bulk-action">' . esc_html__('Apply to all rows', 'perchance-memory-manager') . '</button>';
+		echo '</p>';
 		echo '<table class="widefat striped" style="margin-top:8px;">';
 		echo '<thead><tr>';
 		echo '<th>' . esc_html__('Section', 'perchance-memory-manager') . '</th>';
@@ -1661,6 +1686,7 @@ class PMM_Admin {
 		echo '</p>';
 		submit_button(__('Save Similarity Decisions', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-top:10px;']);
 		echo '</form>';
+		echo '<script>(function(){var form=document.getElementById("pmm-similarity-review-form");if(!form){return;}var bulkSelect=form.querySelector(".pmm-bulk-action");var bulkButton=form.querySelector(".pmm-apply-bulk-action");if(!bulkSelect||!bulkButton){return;}bulkButton.addEventListener("click",function(){var value=bulkSelect.value;if(!value){return;}if(!confirm("' . esc_js(__('Apply this similarity action to all rows in the table?', 'perchance-memory-manager')) . '")){return;}form.querySelectorAll("select[name$=\"[action]\"]").forEach(function(select){select.value=value;});form.submit();});})();</script>';
 	}
 
 	private function render_questionable_entry_review($candidates, $total_found = null) {
@@ -1678,10 +1704,20 @@ class PMM_Admin {
 			echo '<p>' . esc_html(sprintf(__('Questionable entries: %d found. Review and save decisions.', 'perchance-memory-manager'), $shown_count)) . '</p>';
 		}
 		echo '<p class="description">' . esc_html__('Section, entity, and entry are editable. Use Update entry now to immediately move/edit this line in latest output. Remove adds an output rule for next reprocess.', 'perchance-memory-manager') . '</p>';
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-questionable-review-form">';
 		wp_nonce_field('pmm_apply_questionable_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_questionable_review">';
 		echo '<input type="hidden" name="pmm_questionable_expected_count" value="' . esc_attr((string) count($candidates)) . '">';
+		echo '<p style="margin:12px 0 8px;">';
+		echo '<label for="pmm-questionable-bulk-action"><strong>' . esc_html__('Bulk action for all rows', 'perchance-memory-manager') . '</strong></label> ';
+		echo '<select id="pmm-questionable-bulk-action" class="regular-text pmm-bulk-action">';
+		echo '<option value="">' . esc_html__('Choose an action', 'perchance-memory-manager') . '</option>';
+		echo '<option value="keep">' . esc_html__('Keep', 'perchance-memory-manager') . '</option>';
+		echo '<option value="hide">' . esc_html__('Keep and hide (do not ask again)', 'perchance-memory-manager') . '</option>';
+		echo '<option value="remove">' . esc_html__('Remove on next reprocess', 'perchance-memory-manager') . '</option>';
+		echo '</select> ';
+		echo '<button type="button" class="button pmm-apply-bulk-action">' . esc_html__('Apply to all rows', 'perchance-memory-manager') . '</button>';
+		echo '</p>';
 		echo '<table class="widefat striped" style="margin-top:8px;">';
 		echo '<thead><tr>';
 		echo '<th>' . esc_html__('Section', 'perchance-memory-manager') . '</th>';
@@ -1733,6 +1769,7 @@ class PMM_Admin {
 		echo '</p>';
 		submit_button(__('Save Questionable Entry Decisions', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-top:10px;']);
 		echo '</form>';
+		echo '<script>(function(){var form=document.getElementById("pmm-questionable-review-form");if(!form){return;}var bulkSelect=form.querySelector(".pmm-bulk-action");var bulkButton=form.querySelector(".pmm-apply-bulk-action");if(!bulkSelect||!bulkButton){return;}bulkButton.addEventListener("click",function(){var value=bulkSelect.value;if(!value){return;}if(!confirm("' . esc_js(__('Apply this questionable-entry action to all rows in the table?', 'perchance-memory-manager')) . '")){return;}form.querySelectorAll("select[name$=\"[action]\"]").forEach(function(select){select.value=value;});form.submit();});})();</script>';
 	}
 
 	private function render_entity_review($entity_groups) {
@@ -1784,10 +1821,36 @@ class PMM_Admin {
 			return;
 		}
 
+		$total_rows = count($rows);
+		$rows_per_page = max(50, min(250, (int) apply_filters('pmm_entity_review_rows_per_page', 120)));
+		$page = isset($_GET['pmm_entity_page']) ? max(1, (int) $_GET['pmm_entity_page']) : 1;
+		$total_pages = max(1, (int) ceil($total_rows / $rows_per_page));
+		if ($page > $total_pages) {
+			$page = $total_pages;
+		}
+
+		$offset = ($page - 1) * $rows_per_page;
+		$rows_page = array_slice($rows, $offset, $rows_per_page);
+		$shown_from = $offset + 1;
+		$shown_to = $offset + count($rows_page);
+
 		echo '<p class="description">' . esc_html__('Keep leaves the entity untouched. Keep and hide excludes it from future entity review prompts. Remove deletes the entity and entries that mention it when you reprocess.', 'perchance-memory-manager') . '</p>';
+		echo '<p class="description" style="margin-top:6px;">' . esc_html(sprintf(__('Showing entities %1$d-%2$d of %3$d. Save one page at a time to avoid PHP input truncation on large datasets.', 'perchance-memory-manager'), $shown_from, $shown_to, $total_rows)) . '</p>';
+		if ($total_pages > 1) {
+			echo '<p style="margin:8px 0;">';
+			if ($page > 1) {
+				echo '<a class="button" href="' . esc_url(add_query_arg(['pmm_entity_page' => $page - 1])) . '">' . esc_html__('Previous Page', 'perchance-memory-manager') . '</a> ';
+			}
+			echo '<span class="description" style="margin:0 8px;">' . esc_html(sprintf(__('Page %1$d of %2$d', 'perchance-memory-manager'), $page, $total_pages)) . '</span>';
+			if ($page < $total_pages) {
+				echo ' <a class="button" href="' . esc_url(add_query_arg(['pmm_entity_page' => $page + 1])) . '">' . esc_html__('Next Page', 'perchance-memory-manager') . '</a>';
+			}
+			echo '</p>';
+		}
 		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
 		wp_nonce_field('pmm_apply_entity_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_entity_review">';
+		echo '<input type="hidden" name="pmm_entity_expected_count" value="' . esc_attr((string) count($rows_page)) . '">';
 		echo '<table class="widefat striped" style="margin-top:8px;">';
 		echo '<thead><tr>';
 		echo '<th>' . esc_html__('Section', 'perchance-memory-manager') . '</th>';
@@ -1795,7 +1858,7 @@ class PMM_Admin {
 		echo '<th>' . esc_html__('Action', 'perchance-memory-manager') . '</th>';
 		echo '</tr></thead><tbody>';
 
-		foreach ($rows as $row) {
+		foreach ($rows_page as $row) {
 			$id = md5((string) $row['key']);
 			echo '<tr>';
 			echo '<td>' . esc_html($row['section']) . '</td>';
@@ -1900,6 +1963,24 @@ class PMM_Admin {
 		echo '});';
 		echo '</script>';
 		echo '</details>';
+	}
+
+	private function render_alias_rules_manager() {
+		$rules = get_option('pmm_alias_rules', []);
+		if (!is_array($rules)) {
+			$rules = [];
+		}
+
+		$rules_text = $this->serialize_alias_rules($rules);
+
+		echo '<p class="description" style="margin-top:0;">' . esc_html__('Use aliases when nickname/short-name variants should resolve to the same character, location, or organization without deleting either wording. Example: Max => Black Max.', 'perchance-memory-manager') . '</p>';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+		wp_nonce_field('pmm_save_alias_rules');
+		echo '<input type="hidden" name="action" value="pmm_save_alias_rules">';
+		echo '<textarea name="pmm_alias_rules_text" rows="8" class="large-text code" placeholder="Alias Name => Canonical Name">' . esc_textarea($rules_text) . '</textarea>';
+		echo '<p class="description" style="margin-top:8px;">' . esc_html__('One mapping per line. Supported separators: =>, =, or tab. Save and reprocess to apply across output and similarity checks.', 'perchance-memory-manager') . '</p>';
+		submit_button(__('Save Alias Rules', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-top:8px;']);
+		echo '</form>';
 	}
 
 	private function render_rules_summary() {
