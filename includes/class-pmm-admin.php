@@ -63,7 +63,6 @@ class PMM_Admin {
 			$drop_sequences_default = [];
 		}
 		$drop_sequences_text = implode("\n", $drop_sequences_default);
-		$include_entity_report_default = true;
 		$entity_related_match_mode = get_option('pmm_entity_related_match_mode', 'normal');
 		if (!in_array($entity_related_match_mode, ['normal', 'strict'], true)) {
 			$entity_related_match_mode = 'normal';
@@ -117,7 +116,7 @@ class PMM_Admin {
 		$latest_version_saved_at = (int) get_option('pmm_latest_version_saved_at', 0);
 		$latest_version_public_url = '';
 		if ($latest_version_file !== '') {
-			$latest_version_public_url = trailingslashit(PMM_PLUGIN_URL . 'versions') . rawurlencode($latest_version_file);
+			$latest_version_public_url = $this->get_version_public_url($latest_version_file);
 		}
 		$version_history = get_option('pmm_version_history', []);
 		if (!is_array($version_history)) {
@@ -253,9 +252,9 @@ class PMM_Admin {
 		<div class="wrap pmm-wrap">
 			<h1><?php esc_html_e('Perchance', 'perchance-memory-manager'); ?></h1>
 
-			<p>
-				<?php esc_html_e('Upload a Perchance memory file (.txt or .md), clean and reorganize it, then download the processed result.', 'perchance-memory-manager'); ?>
-			</p>
+			<div class="notice notice-info">
+				<p><?php esc_html_e('Upload a Perchance Chat lore or memory file, even character or world information (.txt or .md), to clean, reorganize and manage.', 'perchance-memory-manager'); ?></p>
+			</div>
 
 			<div class="notice notice-info">
 				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('To force loose/raw lines into intake, add a section header "# Raw Import" (or "# New Entries") in your source file. Auto detection will handle mixed input in one pass: bullets, one-entry-per-line dumps, and multi-line paragraph descriptions are all treated as New Entries during processing.', 'perchance-memory-manager'); ?></p>
@@ -267,6 +266,7 @@ class PMM_Admin {
 					<p>
 						<input type="text" class="large-text code" readonly value="<?php echo esc_attr($latest_version_public_url); ?>" onclick="this.select();">
 						<a class="button" href="<?php echo esc_url($latest_version_public_url); ?>" target="_blank" rel="noopener" style="margin-top:6px;"><?php esc_html_e('Open URL', 'perchance-memory-manager'); ?></a>
+						<a class="button button-primary" href="<?php echo esc_url($this->get_download_url()); ?>" style="margin-top:6px;"><?php esc_html_e('Download Cleaned File', 'perchance-memory-manager'); ?></a>
 					</p>
 				</div>
 			<?php endif; ?>
@@ -451,6 +451,12 @@ class PMM_Admin {
 											<input type="hidden" name="action" value="pmm_process_recent_version">
 											<input type="hidden" name="pmm_version_index" value="<?php echo esc_attr((string) $idx); ?>">
 											<button type="submit" class="button button-small"><?php esc_html_e('Process', 'perchance-memory-manager'); ?></button>
+										</form>
+										<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="pmm-process-saved-version-form" style="display:inline; margin-left:6px;">
+											<?php wp_nonce_field('pmm_download_saved_version'); ?>
+											<input type="hidden" name="action" value="pmm_download_saved_version">
+											<input type="hidden" name="pmm_version_index" value="<?php echo esc_attr((string) $idx); ?>">
+											<button type="submit" class="button button-small"><?php esc_html_e('Download', 'perchance-memory-manager'); ?></button>
 										</form>
 										<span style="margin-left:8px;"><?php echo esc_html($vf . ($vs > 0 ? ' (' . wp_date('Y-m-d H:i', $vs) . ')' : '')); ?></span>
 									</li>
@@ -909,48 +915,97 @@ class PMM_Admin {
 				<?php endif; ?>
 			</div>
 
-			<div class="pmm-card">
-				<h2><?php esc_html_e('Active Rules Summary', 'perchance-memory-manager'); ?></h2>
-				<?php $this->render_rules_summary(); ?>
-			</div>
+			<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
+				<div class="pmm-card">
+					<details>
+						<summary><strong><?php esc_html_e('Entity Management Functions', 'perchance-memory-manager'); ?></strong></summary>
+						<div style="margin-top:10px;">
+							<details style="margin:12px 0;">
+								<summary><strong><?php esc_html_e('Similar Entity Review', 'perchance-memory-manager'); ?></strong></summary>
+								<div style="margin-top:10px;">
+									<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? [], isset($data['entity_report']['similar_candidates_total_found']) ? (int) $data['entity_report']['similar_candidates_total_found'] : null, !empty($data['entity_report']['similar_candidates_truncated'])); ?>
+								</div>
+							</details>
+
+							<details style="margin:12px 0;">
+								<summary><strong><?php esc_html_e('Questionable Entry Review', 'perchance-memory-manager'); ?></strong></summary>
+								<div style="margin-top:10px;">
+									<?php $this->render_questionable_entry_review($data['entity_report']['questionable_entries'] ?? [], isset($data['entity_report']['questionable_entries_total_found']) ? (int) $data['entity_report']['questionable_entries_total_found'] : null); ?>
+								</div>
+							</details>
+
+							<details style="margin:12px 0;">
+								<summary><strong><?php esc_html_e('Entity Review', 'perchance-memory-manager'); ?></strong></summary>
+								<div style="margin-top:10px;">
+									<?php $this->render_entity_review($data['entity_report']['entities'] ?? []); ?>
+									<?php $this->render_hidden_entities_manager(); ?>
+								</div>
+							</details>
+
+							<details style="margin:12px 0;">
+								<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
+								<div style="margin-top:10px;">
+									<?php $this->render_alias_rules_manager(); ?>
+								</div>
+							</details>
+
+							<details style="margin:12px 0;">
+								<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
+								<div style="margin-top:10px;">
+									<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
+								</div>
+							</details>
+						</div>
+					</details>
+				</div>
+			<?php endif; ?>
+
+			<?php if ($has_last_output || !empty($similarity_log)) : ?>
+				<div class="pmm-card">
+					<details>
+						<summary><strong><?php esc_html_e('Review and Results Hub', 'perchance-memory-manager'); ?></strong></summary>
+						<div style="margin-top:10px;">
+							<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
+								<details style="margin:12px 0;">
+									<summary><strong><?php esc_html_e('New Entities Added During Processing', 'perchance-memory-manager'); ?></strong></summary>
+									<div style="margin-top:10px;">
+										<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
+									</div>
+								</details>
+							<?php endif; ?>
+
+							<details style="margin:12px 0;">
+								<summary><strong><?php esc_html_e('Active Rules Summary', 'perchance-memory-manager'); ?></strong></summary>
+								<div style="margin-top:10px;">
+									<?php $this->render_rules_summary(); ?>
+								</div>
+							</details>
+
+							<?php if ($has_last_output) : ?>
+								<details style="margin:12px 0;">
+									<summary><strong><?php esc_html_e('Last Processed Result', 'perchance-memory-manager'); ?></strong></summary>
+									<div style="margin-top:10px;">
+										<?php $this->render_last_processed_result_summary($data, $rules_dirty); ?>
+									</div>
+								</details>
+							<?php endif; ?>
+
+							<?php if (!empty($similarity_log)) : ?>
+								<details style="margin:12px 0;">
+									<summary><strong><?php esc_html_e('Recent Similarity Decisions', 'perchance-memory-manager'); ?></strong></summary>
+									<div style="margin-top:10px;">
+										<?php $this->render_recent_similarity_decisions($similarity_log); ?>
+									</div>
+								</details>
+							<?php endif; ?>
+						</div>
+					</details>
+				</div>
+			<?php endif; ?>
 
 			<?php if ($has_last_output) : ?>
 				<div class="pmm-card">
-					<h2><?php esc_html_e('Last Processed Result', 'perchance-memory-manager'); ?></h2>
-					<ul class="pmm-stats">
-						<li><strong><?php esc_html_e('Original file:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html($data['stats']['original_filename']); ?></li>
-						<li><strong><?php esc_html_e('Sections:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) $data['stats']['sections']); ?></li>
-						<li><strong><?php esc_html_e('Entities:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) $data['stats']['entities']); ?></li>
-						<li><strong><?php esc_html_e('Bullets:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) $data['stats']['bullets']); ?></li>
-						<li><strong><?php esc_html_e('Removed (total):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_total'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Removed (entity review rules):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_by_entity_rule'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Removed (questionable entry rules):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_by_entry_rule'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Removed (sequence match):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_by_sequence'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Removed (mundane noise):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_mundane_noise'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Removed (NSFW non-character):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_nsfw_non_character'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Removed (duplicates):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ($data['stats']['removed_duplicates'] ?? 0)); ?></li>
-						<li><strong><?php esc_html_e('Mode:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html($data['stats']['mode']); ?></li>
-						<li><strong><?php esc_html_e('Format:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html($data['stats']['format']); ?></li>
-					</ul>
-
-					<p>
-						<a class="button button-primary" href="<?php echo esc_url($this->get_download_url()); ?>">
-							<?php esc_html_e('Download Cleaned File', 'perchance-memory-manager'); ?>
-						</a>
-					</p>
-
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px;">
-						<?php wp_nonce_field('pmm_reprocess_last_output'); ?>
-						<input type="hidden" name="action" value="pmm_reprocess_last_output">
-						<?php submit_button(__('Reprocess Last Output (No Re-upload)', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
-					</form>
-					<?php if ($rules_dirty) : ?>
-						<p class="description" style="margin-top:-6px;margin-bottom:10px;"><?php esc_html_e('Reprocess is currently recommended because output-affecting rules/staging changed.', 'perchance-memory-manager'); ?></p>
-					<?php else : ?>
-						<p class="description" style="margin-top:-6px;margin-bottom:10px;"><?php esc_html_e('Reprocess is optional right now. Use it when you changed rules, staged raw rows, or want a fresh full pipeline pass.', 'perchance-memory-manager'); ?></p>
-					<?php endif; ?>
-
-					<h3><?php esc_html_e('Editable Preview', 'perchance-memory-manager'); ?></h3>
+					<h2><?php esc_html_e('Editable Output Workspace', 'perchance-memory-manager'); ?></h2>
 					<p class="description"><?php esc_html_e('Edit this output directly, then save it as the latest version. Use quick find to navigate large text by free text, section, or entity.', 'perchance-memory-manager'); ?></p>
 
 					<p style="margin-bottom:8px;">
@@ -1370,84 +1425,57 @@ class PMM_Admin {
 						});
 					</script>
 
-					<?php if (!empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
-						<details style="margin-top:12px;">
-							<summary><strong><?php esc_html_e('Entity Review Functions', 'perchance-memory-manager'); ?></strong></summary>
-							<div style="margin-top:10px;">
-								<details style="margin:12px 0;" open>
-									<summary><strong><?php esc_html_e('New Entities Added During Processing', 'perchance-memory-manager'); ?></strong></summary>
-									<div style="margin-top:10px;">
-										<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
-									</div>
-								</details>
-
-								<details style="margin:12px 0;">
-									<summary><strong><?php esc_html_e('Similar Entity Detection', 'perchance-memory-manager'); ?></strong></summary>
-									<div style="margin-top:10px;">
-										<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? [], isset($data['entity_report']['similar_candidates_total_found']) ? (int) $data['entity_report']['similar_candidates_total_found'] : null, !empty($data['entity_report']['similar_candidates_truncated'])); ?>
-									</div>
-								</details>
-
-								<details style="margin:12px 0;" open>
-									<summary><strong><?php esc_html_e('Questionable Entry Review', 'perchance-memory-manager'); ?></strong></summary>
-									<div style="margin-top:10px;">
-										<?php $this->render_questionable_entry_review($data['entity_report']['questionable_entries'] ?? [], isset($data['entity_report']['questionable_entries_total_found']) ? (int) $data['entity_report']['questionable_entries_total_found'] : null); ?>
-									</div>
-								</details>
-
-								<details style="margin:12px 0;">
-									<summary><strong><?php esc_html_e('Entity Review', 'perchance-memory-manager'); ?></strong></summary>
-									<div style="margin-top:10px;">
-										<?php $this->render_entity_review($data['entity_report']['entities'] ?? []); ?>
-										<?php $this->render_hidden_entities_manager(); ?>
-									</div>
-								</details>
-
-								<details style="margin:12px 0;">
-									<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
-									<div style="margin-top:10px;">
-										<?php $this->render_alias_rules_manager(); ?>
-									</div>
-								</details>
-
-								<details style="margin:12px 0;">
-									<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
-									<div style="margin-top:10px;">
-										<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
-									</div>
-								</details>
-							</div>
-						</details>
-					<?php endif; ?>
 				</div>
 			<?php endif; ?>
 
-			<?php if (!empty($similarity_log)) : ?>
-				<div class="pmm-card">
-					<details>
-						<summary><strong><?php esc_html_e('Recent Similarity Decisions', 'perchance-memory-manager'); ?></strong></summary>
-						<p class="description" style="margin-top:8px;"><?php esc_html_e('Similarity review is the main place to create and manage alias mappings now.', 'perchance-memory-manager'); ?></p>
-						<ul>
-							<?php foreach (array_slice($similarity_log, 0, 25) as $row) : ?>
-								<li>
-									<?php
-									$ts = isset($row['time']) ? (int) $row['time'] : 0;
-									$when = $ts ? wp_date('Y-m-d H:i', $ts) : '';
-									$action = isset($row['action']) ? (string) $row['action'] : '';
-									$section = isset($row['section']) ? (string) $row['section'] : '';
-									$a = isset($row['a']) ? (string) $row['a'] : '';
-									$b = isset($row['b']) ? (string) $row['b'] : '';
-									$canonical = isset($row['canonical']) ? (string) $row['canonical'] : '';
-									echo esc_html(trim($when . ' | ' . $section . ' | ' . $action . ' | ' . $a . ' <> ' . $b . ($canonical ? ' => ' . $canonical : '')));
-									?>
-								</li>
-							<?php endforeach; ?>
-						</ul>
-					</details>
-				</div>
-			<?php endif; ?>
 		</div>
 		<?php
+	}
+
+	private function render_last_processed_result_summary($data, $rules_dirty) {
+		echo '<ul class="pmm-stats">';
+		echo '<li><strong>' . esc_html__('Original file:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['original_filename'] ?? '')) . '</li>';
+		echo '<li><strong>' . esc_html__('Sections:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['sections'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Entities:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['entities'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Bullets:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['bullets'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (total):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_total'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (entity review rules):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_by_entity_rule'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (questionable entry rules):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_by_entry_rule'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (sequence match):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_by_sequence'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (mundane noise):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_mundane_noise'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (NSFW non-character):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_nsfw_non_character'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Removed (duplicates):', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['removed_duplicates'] ?? 0)) . '</li>';
+		echo '<li><strong>' . esc_html__('Mode:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['mode'] ?? '')) . '</li>';
+		echo '<li><strong>' . esc_html__('Format:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['format'] ?? '')) . '</li>';
+		echo '</ul>';
+
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-bottom:10px;">';
+		wp_nonce_field('pmm_reprocess_last_output');
+		echo '<input type="hidden" name="action" value="pmm_reprocess_last_output">';
+		submit_button(__('Reprocess Last Output (No Re-upload)', 'perchance-memory-manager'), 'secondary', 'submit', false);
+		echo '</form>';
+
+		if ($rules_dirty) {
+			echo '<p class="description" style="margin-top:-6px;margin-bottom:10px;">' . esc_html__('Reprocess is currently recommended because output-affecting rules/staging changed.', 'perchance-memory-manager') . '</p>';
+		} else {
+			echo '<p class="description" style="margin-top:-6px;margin-bottom:10px;">' . esc_html__('Reprocess is optional right now. Use it when you changed rules, staged raw rows, or want a fresh full pipeline pass.', 'perchance-memory-manager') . '</p>';
+		}
+	}
+
+	private function render_recent_similarity_decisions($similarity_log) {
+		echo '<p class="description" style="margin-top:8px;">' . esc_html__('Similarity review is the main place to create and manage alias mappings now.', 'perchance-memory-manager') . '</p>';
+		echo '<ul>';
+		foreach (array_slice((array) $similarity_log, 0, 25) as $row) {
+			$ts = isset($row['time']) ? (int) $row['time'] : 0;
+			$when = $ts ? wp_date('Y-m-d H:i', $ts) : '';
+			$action = isset($row['action']) ? (string) $row['action'] : '';
+			$section = isset($row['section']) ? (string) $row['section'] : '';
+			$a = isset($row['a']) ? (string) $row['a'] : '';
+			$b = isset($row['b']) ? (string) $row['b'] : '';
+			$canonical = isset($row['canonical']) ? (string) $row['canonical'] : '';
+			echo '<li>' . esc_html(trim($when . ' | ' . $section . ' | ' . $action . ' | ' . $a . ' <> ' . $b . ($canonical ? ' => ' . $canonical : ''))) . '</li>';
+		}
+		echo '</ul>';
 	}
 
 	private function get_download_url() {
@@ -1457,6 +1485,15 @@ class PMM_Admin {
 			], admin_url('admin-post.php')),
 			'pmm_download_last_output'
 		);
+	}
+
+	private function get_version_public_url($filename) {
+		$filename = trim((string) $filename);
+		if ($filename === '') {
+			return '';
+		}
+
+		return trailingslashit(PMM_PLUGIN_URL . 'versions') . rawurlencode($filename);
 	}
 
 	private function get_error_message($code) {
