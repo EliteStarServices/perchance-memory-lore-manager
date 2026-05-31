@@ -40,6 +40,7 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_save_alias_rules', [$this, 'save_alias_rules']);
 		add_action('admin_post_pmm_reprocess_last_output', [$this, 'reprocess_last_output']);
 		add_action('admin_post_pmm_download_last_output', [$this, 'download_last_output']);
+		add_action('admin_post_pmm_download_saved_version', [$this, 'download_saved_version']);
 		add_action('admin_post_pmm_save_preview_content', [$this, 'save_preview_content']);
 		add_action('wp_ajax_pmm_get_entities_for_section', [$this, 'ajax_get_entities_for_section']);
 	}
@@ -124,6 +125,7 @@ class PMM_Plugin {
 		$drop_sequences = isset($_POST['pmm_drop_sequences']) ? $this->sanitize_drop_sequences(wp_unslash($_POST['pmm_drop_sequences'])) : [];
 		$include_entity_report = true;
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request($_POST);
+		$classification_settings = $this->read_classification_settings_from_request($_POST);
 		$questionable_settings = $this->read_questionable_settings_from_request($_POST);
 		$entity_related_match_mode = isset($_POST['pmm_entity_related_match_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_entity_related_match_mode'])) : 'normal';
 		if (!in_array($entity_related_match_mode, ['normal', 'strict'], true)) {
@@ -132,6 +134,7 @@ class PMM_Plugin {
 		update_option('pmm_drop_sequences', $drop_sequences, false);
 		update_option('pmm_include_entity_report', '1', false);
 		update_option('pmm_similarity_thresholds', $similarity_thresholds, false);
+		update_option('pmm_classification_settings', $classification_settings, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
 		update_option('pmm_last_mode', $mode, false);
@@ -285,6 +288,7 @@ class PMM_Plugin {
 
 		$include_entity_report = true;
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request(isset($_POST) ? $_POST : null);
+		$classification_settings = $this->read_classification_settings_from_request(isset($_POST) ? $_POST : null);
 		$questionable_settings = $this->read_questionable_settings_from_request(isset($_POST) ? $_POST : null);
 
 		$entity_related_match_mode = isset($_POST['pmm_entity_related_match_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_entity_related_match_mode'])) : (string) get_option('pmm_entity_related_match_mode', 'normal');
@@ -297,6 +301,7 @@ class PMM_Plugin {
 		update_option('pmm_drop_sequences', $drop_sequences, false);
 		update_option('pmm_include_entity_report', '1', false);
 		update_option('pmm_similarity_thresholds', $similarity_thresholds, false);
+		update_option('pmm_classification_settings', $classification_settings, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
 
@@ -376,6 +381,45 @@ class PMM_Plugin {
 
 		$filename = sanitize_file_name($data['filename']);
 		$content = (string) $data['content'];
+
+		nocache_headers();
+		header('Content-Description: File Transfer');
+		header('Content-Type: text/plain; charset=' . get_option('blog_charset'));
+		header('Content-Disposition: attachment; filename="' . $filename . '"');
+		header('Content-Length: ' . strlen($content));
+
+		echo $content;
+		exit;
+	}
+
+	public function download_saved_version() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_download_saved_version');
+
+		$history = get_option('pmm_version_history', []);
+		if (!is_array($history) || empty($history)) {
+			wp_die(esc_html__('No saved version is available for download.', 'perchance-memory-manager'));
+		}
+
+		$index = isset($_REQUEST['pmm_version_index']) ? (int) wp_unslash((string) $_REQUEST['pmm_version_index']) : -1;
+		if ($index < 0 || !isset($history[$index]) || !is_array($history[$index])) {
+			wp_die(esc_html__('The requested saved version could not be found.', 'perchance-memory-manager'));
+		}
+
+		$item = $history[$index];
+		$path = isset($item['path']) ? (string) $item['path'] : '';
+		$filename = isset($item['filename']) ? sanitize_file_name((string) $item['filename']) : basename($path);
+		if ($path === '' || !file_exists($path) || !is_readable($path)) {
+			wp_die(esc_html__('The requested saved version file is missing.', 'perchance-memory-manager'));
+		}
+
+		$content = file_get_contents($path);
+		if ($content === false) {
+			wp_die(esc_html__('The requested saved version could not be read.', 'perchance-memory-manager'));
+		}
 
 		nocache_headers();
 		header('Content-Description: File Transfer');
@@ -2713,6 +2757,55 @@ class PMM_Plugin {
 			if (!isset($current[$key])) {
 				$current[$key] = $default;
 			}
+		}
+
+		return $current;
+	}
+
+	private function classification_settings_defaults() {
+		return [
+			'character_veto' => 1,
+			'organizations_min_score' => 2,
+			'locations_min_score' => 2,
+			'technology_min_score' => 2,
+		];
+	}
+
+	private function get_classification_settings_option() {
+		$defaults = $this->classification_settings_defaults();
+		$stored = get_option('pmm_classification_settings', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$settings = $defaults;
+		$settings['character_veto'] = !empty($stored['character_veto']) ? 1 : 0;
+		$settings['organizations_min_score'] = isset($stored['organizations_min_score']) ? max(1, min(3, (int) $stored['organizations_min_score'])) : $defaults['organizations_min_score'];
+		$settings['locations_min_score'] = isset($stored['locations_min_score']) ? max(1, min(3, (int) $stored['locations_min_score'])) : $defaults['locations_min_score'];
+		$settings['technology_min_score'] = isset($stored['technology_min_score']) ? max(1, min(3, (int) $stored['technology_min_score'])) : $defaults['technology_min_score'];
+
+		return $settings;
+	}
+
+	private function read_classification_settings_from_request($request) {
+		if (!is_array($request)) {
+			return $this->get_classification_settings_option();
+		}
+
+		$current = $this->get_classification_settings_option();
+		$current['character_veto'] = !empty($request['pmm_character_fact_veto']) ? 1 : 0;
+
+		$map = [
+			'organizations_min_score' => 'pmm_org_min_score',
+			'locations_min_score' => 'pmm_location_min_score',
+			'technology_min_score' => 'pmm_technology_min_score',
+		];
+
+		foreach ($map as $key => $field) {
+			if (!isset($request[$field])) {
+				continue;
+			}
+			$current[$key] = max(1, min(3, (int) wp_unslash((string) $request[$field])));
 		}
 
 		return $current;

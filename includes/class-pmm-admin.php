@@ -78,6 +78,21 @@ class PMM_Admin {
 			$similarity_thresholds = [];
 		}
 		$similarity_thresholds = array_merge($similarity_threshold_defaults, $similarity_thresholds);
+		$classification_defaults = [
+			'character_veto' => 1,
+			'organizations_min_score' => 2,
+			'locations_min_score' => 2,
+			'technology_min_score' => 2,
+		];
+		$classification_settings = get_option('pmm_classification_settings', []);
+		if (!is_array($classification_settings)) {
+			$classification_settings = [];
+		}
+		$classification_settings = array_merge($classification_defaults, $classification_settings);
+		$classification_settings['character_veto'] = !empty($classification_settings['character_veto']) ? 1 : 0;
+		$classification_settings['organizations_min_score'] = max(1, min(3, (int) $classification_settings['organizations_min_score']));
+		$classification_settings['locations_min_score'] = max(1, min(3, (int) $classification_settings['locations_min_score']));
+		$classification_settings['technology_min_score'] = max(1, min(3, (int) $classification_settings['technology_min_score']));
 		$questionable_defaults = [
 			'min_words' => 4,
 			'min_chars' => 18,
@@ -536,6 +551,25 @@ class PMM_Admin {
 							</td>
 						</tr>
 						<tr>
+							<th scope="row"><?php esc_html_e('Section Classification Guards', 'perchance-memory-manager'); ?></th>
+							<td>
+								<label style="display:block;margin-bottom:8px;">
+									<input type="checkbox" id="pmm_character_fact_veto" name="pmm_character_fact_veto" value="1" <?php checked(!empty($classification_settings['character_veto'])); ?>>
+									<?php esc_html_e('Prevent character-style facts from being auto-routed to Organizations, Locations, or Technology / Systems', 'perchance-memory-manager'); ?>
+								</label>
+								<p class="description" style="margin-bottom:8px;"><?php esc_html_e('Higher minimum score is stricter and reduces false positives. Range: 1 (loose) to 3 (strict).', 'perchance-memory-manager'); ?></p>
+								<label style="display:inline-block;margin-right:12px;"><?php esc_html_e('Organizations min score', 'perchance-memory-manager'); ?>
+									<input type="number" min="1" max="3" id="pmm_org_min_score" name="pmm_org_min_score" value="<?php echo esc_attr((string) $classification_settings['organizations_min_score']); ?>" style="width:90px;">
+								</label>
+								<label style="display:inline-block;margin-right:12px;"><?php esc_html_e('Locations min score', 'perchance-memory-manager'); ?>
+									<input type="number" min="1" max="3" id="pmm_location_min_score" name="pmm_location_min_score" value="<?php echo esc_attr((string) $classification_settings['locations_min_score']); ?>" style="width:90px;">
+								</label>
+								<label style="display:inline-block;"><?php esc_html_e('Technology min score', 'perchance-memory-manager'); ?>
+									<input type="number" min="1" max="3" id="pmm_technology_min_score" name="pmm_technology_min_score" value="<?php echo esc_attr((string) $classification_settings['technology_min_score']); ?>" style="width:90px;">
+								</label>
+							</td>
+						</tr>
+						<tr>
 							<th scope="row"><?php esc_html_e('Questionable Entry Review Tuning', 'perchance-memory-manager'); ?></th>
 							<td>
 								<label style="display:inline-block;margin-right:12px;"><?php esc_html_e('Min words to avoid short flag', 'perchance-memory-manager'); ?>
@@ -564,6 +598,10 @@ class PMM_Admin {
 						similarityThresholdOrganizations: document.getElementById('pmm_similarity_threshold_organizations'),
 						similarityThresholdLocations: document.getElementById('pmm_similarity_threshold_locations'),
 						similarityThresholdTechnology: document.getElementById('pmm_similarity_threshold_technology'),
+						characterFactVeto: document.getElementById('pmm_character_fact_veto'),
+						organizationMinScore: document.getElementById('pmm_org_min_score'),
+						locationMinScore: document.getElementById('pmm_location_min_score'),
+						technologyMinScore: document.getElementById('pmm_technology_min_score'),
 						questionableMinWords: document.getElementById('pmm_questionable_min_words'),
 						questionableMinChars: document.getElementById('pmm_questionable_min_chars'),
 						questionableTerms: document.getElementById('pmm_questionable_terms')
@@ -596,6 +634,10 @@ class PMM_Admin {
 							upsertHidden(form, 'pmm_similarity_threshold_organizations', source.similarityThresholdOrganizations ? source.similarityThresholdOrganizations.value : '0.70');
 							upsertHidden(form, 'pmm_similarity_threshold_locations', source.similarityThresholdLocations ? source.similarityThresholdLocations.value : '0.66');
 							upsertHidden(form, 'pmm_similarity_threshold_technology', source.similarityThresholdTechnology ? source.similarityThresholdTechnology.value : '0.72');
+							upsertHidden(form, 'pmm_character_fact_veto', source.characterFactVeto && source.characterFactVeto.checked ? '1' : '0');
+							upsertHidden(form, 'pmm_org_min_score', source.organizationMinScore ? source.organizationMinScore.value : '2');
+							upsertHidden(form, 'pmm_location_min_score', source.locationMinScore ? source.locationMinScore.value : '2');
+							upsertHidden(form, 'pmm_technology_min_score', source.technologyMinScore ? source.technologyMinScore.value : '2');
 							upsertHidden(form, 'pmm_questionable_min_words', source.questionableMinWords ? source.questionableMinWords.value : '4');
 							upsertHidden(form, 'pmm_questionable_min_chars', source.questionableMinChars ? source.questionableMinChars.value : '18');
 							upsertHidden(form, 'pmm_questionable_terms', source.questionableTerms ? source.questionableTerms.value : '');

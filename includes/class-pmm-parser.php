@@ -57,8 +57,16 @@ class PMM_Parser {
 		'evangeline thorne' => 'Eva Thorne',
 	];
 
+	private $classification_settings = [
+		'character_veto' => 1,
+		'organizations_min_score' => 2,
+		'locations_min_score' => 2,
+		'technology_min_score' => 2,
+	];
+
 	public function __construct() {
 		$this->alias_map = $this->merge_persisted_alias_rules($this->alias_map);
+		$this->classification_settings = $this->get_classification_settings_option();
 	}
 
 	public function parse($raw) {
@@ -285,7 +293,16 @@ class PMM_Parser {
 			];
 		}
 
-		if (preg_match('/\b(Tech|Technologies|Industries|Division|Labs|Holdings|University)\b/u', $entry, $m)) {
+		$settings = $this->classification_settings;
+		$looks_like_character_fact = !empty($settings['character_veto']) && $this->looks_like_character_fact($entry);
+		$organization_score = $this->organization_signal_score($entry);
+		$location_score = $this->location_signal_score($entry);
+		$technology_score = $this->technology_signal_score($entry);
+		$org_min_score = max(1, min(3, (int) $settings['organizations_min_score']));
+		$location_min_score = max(1, min(3, (int) $settings['locations_min_score']));
+		$technology_min_score = max(1, min(3, (int) $settings['technology_min_score']));
+
+		if (!$looks_like_character_fact && $organization_score >= $org_min_score && $organization_score >= $location_score && $organization_score >= $technology_score) {
 			$name = $this->extract_leading_name($entry);
 			return [
 				'section' => 'Organizations',
@@ -294,7 +311,7 @@ class PMM_Parser {
 			];
 		}
 
-		if (preg_match('/\b(Isle|Island|Lab|Suite|Tower|Penthouse|Marina|Helipad|Gateway|Cabana|Deck|Terrace)\b/u', $entry)) {
+		if (!$looks_like_character_fact && $location_score >= $location_min_score && $location_score >= $technology_score) {
 			$name = $this->extract_leading_name($entry);
 			return [
 				'section' => 'Locations',
@@ -303,7 +320,7 @@ class PMM_Parser {
 			];
 		}
 
-		if (preg_match('/\b(protocol|interface|system|drone|neural|holopad|prototype|chassis)\b/ui', $entry)) {
+		if (!$looks_like_character_fact && $technology_score >= $technology_min_score) {
 			$name = $this->extract_leading_name($entry);
 			return [
 				'section' => 'Technology / Systems',
@@ -326,6 +343,117 @@ class PMM_Parser {
 			'entity' => 'Unsorted Inbox',
 			'bullet' => $entry,
 		];
+	}
+
+	private function looks_like_character_fact($entry) {
+		if (!is_string($entry) || trim($entry) === '') {
+			return false;
+		}
+
+		if (preg_match('/\b(he|she|they|him|her|his|hers|their|theirs)\b/i', $entry)) {
+			return true;
+		}
+
+		if (preg_match('/\b(years? old|age\s*\d+|hair|eyes|voice|smile|smiles|frowns|cries|laughs|kisses|hugs|wears|carries|flirts|jealous|angry|afraid|nervous|pregnant|injured|married|dating|boyfriend|girlfriend|husband|wife|mother|father|sister|brother|friend|lover)\b/i', $entry)) {
+			return true;
+		}
+
+		if (preg_match('/\b(said|says|told|asked|replied|whispered|shouted|met|meets|loves|hates|fears|wants|needs|plans|decides|promised)\b/i', $entry)) {
+			return true;
+		}
+
+		return false;
+	}
+
+	private function organization_signal_score($entry) {
+		if (!is_string($entry) || trim($entry) === '') {
+			return 0;
+		}
+
+		$score = 0;
+
+		if (preg_match('/\b(Tech|Technologies|Industries|Division|Labs|Holdings|University|Company|Corp|Corporation|Agency|Council|Syndicate|Guild|Institute|Foundation|Committee|Department|Bureau|Office|Consortium|Group|Team|Unit)\b/ui', $entry)) {
+			$score++;
+		}
+
+		if (preg_match('/\b(founded|headquartered|subsidiary|acquired|merged|employees|staff|board|ceo|director|division|branch|policy|charter|mandate|operations|funding|contract)\b/ui', $entry)) {
+			$score++;
+		}
+
+		if (preg_match('/\b(organization|organisation|company|agency|department|committee|board|institution)\b/ui', $entry)) {
+			$score++;
+		}
+
+		return $score;
+	}
+
+	private function location_signal_score($entry) {
+		if (!is_string($entry) || trim($entry) === '') {
+			return 0;
+		}
+
+		$score = 0;
+
+		if (preg_match('/\b(Isle|Island|Lab|Suite|Tower|Penthouse|Marina|Helipad|Gateway|Cabana|Deck|Terrace|District|Neighborhood|City|Town|Village|Station|Base|Campus|Facility|Compound|Bunker|Room|Hall|Street|Avenue|Boulevard|Plaza|Port|Dock|Harbor|Valley|Mountain|Forest|Desert)\b/ui', $entry)) {
+			$score++;
+		}
+
+		if (preg_match('/\b(located|situated|address|coordinates|district|zone|region|terrain|climate|population|entrance|exit|floor|level|nearby|surrounding|neighborhood|headquarters|hq)\b/ui', $entry)) {
+			$score++;
+		}
+
+		if (preg_match('/\b(in|at|near|inside|outside|within)\s+(the\s+)?(district|zone|sector|region|city|town|village|island|tower|suite|facility|campus|base|station|harbor|marina)\b/ui', $entry)) {
+			$score++;
+		}
+
+		return $score;
+	}
+
+	private function technology_signal_score($entry) {
+		if (!is_string($entry) || trim($entry) === '') {
+			return 0;
+		}
+
+		$score = 0;
+
+		if (preg_match('/\b(protocol|interface|system|drone|neural|holopad|prototype|chassis|firmware|software|hardware|algorithm|module|sensor|reactor|engine|database|network|encryption|api|platform|device|toolkit|framework|bandwidth|calibration|telemetry|autopilot)\b/ui', $entry)) {
+			$score++;
+		}
+
+		if (preg_match('/\b(version|model|spec|specs|build|release|patch|upgrade|downgrade|latency|throughput|power output|signal|runtime|diagnostic|failsafe|integration|deployment)\b/ui', $entry)) {
+			$score++;
+		}
+
+		if (preg_match('/\b(v\d+(?:\.\d+)*)\b/u', $entry)) {
+			$score++;
+		}
+
+		return $score;
+	}
+
+	private function classification_settings_defaults() {
+		return [
+			'character_veto' => 1,
+			'organizations_min_score' => 2,
+			'locations_min_score' => 2,
+			'technology_min_score' => 2,
+		];
+	}
+
+	private function get_classification_settings_option() {
+		$defaults = $this->classification_settings_defaults();
+		$stored = get_option('pmm_classification_settings', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$settings = $defaults;
+		$settings['character_veto'] = !empty($stored['character_veto']) ? 1 : 0;
+		$settings['organizations_min_score'] = isset($stored['organizations_min_score']) ? max(1, min(3, (int) $stored['organizations_min_score'])) : $defaults['organizations_min_score'];
+		$settings['locations_min_score'] = isset($stored['locations_min_score']) ? max(1, min(3, (int) $stored['locations_min_score'])) : $defaults['locations_min_score'];
+		$settings['technology_min_score'] = isset($stored['technology_min_score']) ? max(1, min(3, (int) $stored['technology_min_score'])) : $defaults['technology_min_score'];
+
+		return $settings;
 	}
 
 	private function extract_leading_name($entry) {
@@ -379,7 +507,50 @@ class PMM_Parser {
 			return false;
 		}
 
-		return preg_match('/[.!?"\')\]]$/u', $previous) === 1;
+		return $this->looks_like_sentence_boundary($previous);
+	}
+
+	private function looks_like_sentence_boundary($text) {
+		$trimmed = rtrim((string) $text);
+		if ($trimmed === '') {
+			return false;
+		}
+
+		if (preg_match('/[!?]["\')\]]*$/u', $trimmed) === 1) {
+			return true;
+		}
+
+		if (preg_match('/\.["\')\]]*$/u', $trimmed) !== 1) {
+			return false;
+		}
+
+		if ($this->ends_with_non_terminal_abbreviation($trimmed)) {
+			return false;
+		}
+
+		return true;
+	}
+
+	private function ends_with_non_terminal_abbreviation($text) {
+		$trimmed = rtrim((string) $text);
+		if ($trimmed === '') {
+			return false;
+		}
+
+		$patterns = [
+			'/\b(?:mr|mrs|ms|dr|prof|sr|jr|st|mt|rev|gen|col|capt|lt|sgt|adm|gov|sen|rep|pres|hon|messrs|mme|mlle|etc|vs|no|dept|fig|inc|ltd|co|corp|assn|univ)\.["\')\]]*$/iu',
+			'/\b(?:e\.g|i\.e|a\.k\.a|u\.s|u\.k|u\.n|d\.c|p\.m|a\.m)\.["\')\]]*$/iu',
+			'/(?:\b[A-Z]\.){2,}["\')\]]*$/u',
+			'/\b[A-Z]\.["\')\]]*$/u',
+		];
+
+		foreach ($patterns as $pattern) {
+			if (preg_match($pattern, $trimmed) === 1) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private function is_likely_raw_continuation($line) {
