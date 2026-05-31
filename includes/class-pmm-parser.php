@@ -15,6 +15,8 @@ class PMM_Parser {
 		'Organizations',
 		'Locations',
 		'Technology / Systems',
+		'Vehicles / Transportation',
+		'World Building',
 		'Relationships',
 		'NSFW',
 		'Notes',
@@ -34,6 +36,17 @@ class PMM_Parser {
 		'technology systems' => 'Technology / Systems',
 		'technology' => 'Technology / Systems',
 		'systems' => 'Technology / Systems',
+		'vehicles / transportation' => 'Vehicles / Transportation',
+		'vehicles/transportation' => 'Vehicles / Transportation',
+		'vehicles transportation' => 'Vehicles / Transportation',
+		'vehicles' => 'Vehicles / Transportation',
+		'vehicle' => 'Vehicles / Transportation',
+		'transportation' => 'Vehicles / Transportation',
+		'transport' => 'Vehicles / Transportation',
+		'world building' => 'World Building',
+		'worldbuilding' => 'World Building',
+		'world lore' => 'World Building',
+		'lore' => 'World Building',
 		'relationships' => 'Relationships',
 		'relationship' => 'Relationships',
 		'nsfw' => 'NSFW',
@@ -62,6 +75,8 @@ class PMM_Parser {
 		'organizations_min_score' => 2,
 		'locations_min_score' => 2,
 		'technology_min_score' => 2,
+		'vehicles_min_score' => 2,
+		'world_building_min_score' => 2,
 	];
 
 	public function __construct() {
@@ -124,7 +139,7 @@ class PMM_Parser {
 				continue;
 			}
 
-			if (in_array($current_section, ['Relationships', 'NSFW', 'Notes'], true)) {
+			if (in_array($current_section, $this->section_level_sections(), true)) {
 				$data[$current_section]['__entries__'][] = $this->strip_bullet_prefix($line);
 				continue;
 			}
@@ -243,7 +258,7 @@ class PMM_Parser {
 		$text = preg_replace('/\s+[•*]\s+/u', "\n- ", $text);
 		$text = preg_replace('/(?<!\n)#\s*/u', "\n# ", $text);
 
-		$text = preg_replace('/\s+#\s+(Characters|Organizations|Locations|Technology\s*\/\s*Systems|Relationships|NSFW|Notes|New Entries|Raw Import)\b/u', "\n# $1", $text);
+		$text = preg_replace('/\s+#\s+(Characters|Organizations|Locations|Technology\s*\/\s*Systems|Vehicles\s*\/\s*Transportation|World\s*Building|Relationships|NSFW|Notes|New Entries|Raw Import)\b/u', "\n# $1", $text);
 
 		foreach ($this->section_names as $section) {
 			$pattern = '/#\s+' . preg_quote($section, '/') . '\s+(?=[A-Z])/u';
@@ -298,11 +313,15 @@ class PMM_Parser {
 		$organization_score = $this->organization_signal_score($entry);
 		$location_score = $this->location_signal_score($entry);
 		$technology_score = $this->technology_signal_score($entry);
+		$vehicle_score = $this->vehicle_signal_score($entry);
+		$world_building_score = $this->world_building_signal_score($entry);
 		$org_min_score = max(1, min(3, (int) $settings['organizations_min_score']));
 		$location_min_score = max(1, min(3, (int) $settings['locations_min_score']));
 		$technology_min_score = max(1, min(3, (int) $settings['technology_min_score']));
+		$vehicles_min_score = max(1, min(3, (int) $settings['vehicles_min_score']));
+		$world_building_min_score = max(1, min(3, (int) $settings['world_building_min_score']));
 
-		if (!$looks_like_character_fact && $organization_score >= $org_min_score && $organization_score >= $location_score && $organization_score >= $technology_score) {
+		if (!$looks_like_character_fact && $organization_score >= $org_min_score && $organization_score >= $location_score && $organization_score >= $technology_score && $organization_score >= $vehicle_score && $organization_score >= $world_building_score) {
 			$name = $this->extract_leading_name($entry);
 			return [
 				'section' => 'Organizations',
@@ -311,12 +330,29 @@ class PMM_Parser {
 			];
 		}
 
-		if (!$looks_like_character_fact && $location_score >= $location_min_score && $location_score >= $technology_score) {
+		if (!$looks_like_character_fact && $vehicle_score >= $vehicles_min_score && $vehicle_score >= $location_score && $vehicle_score >= $technology_score && $vehicle_score >= $world_building_score) {
+			$name = $this->extract_leading_name($entry);
+			return [
+				'section' => 'Vehicles / Transportation',
+				'entity' => $name ?: 'Unsorted Vehicle',
+				'bullet' => $this->strip_entity_prefix($entry, $name),
+			];
+		}
+
+		if (!$looks_like_character_fact && $location_score >= $location_min_score && $location_score >= $technology_score && $location_score >= $world_building_score) {
 			$name = $this->extract_leading_name($entry);
 			return [
 				'section' => 'Locations',
 				'entity' => $name ?: 'Unsorted Location',
 				'bullet' => $this->strip_entity_prefix($entry, $name),
+			];
+		}
+
+		if (!$looks_like_character_fact && $world_building_score >= $world_building_min_score && $world_building_score >= $technology_score) {
+			return [
+				'section' => 'World Building',
+				'entity' => '',
+				'bullet' => $entry,
 			];
 		}
 
@@ -387,6 +423,44 @@ class PMM_Parser {
 		return $score;
 	}
 
+	private function vehicle_signal_score($entry) {
+		if (!is_string($entry) || trim($entry) === '') {
+			return 0;
+		}
+
+		$score = 0;
+		if (preg_match('/\b(ship|shuttle|fighter|frigate|freighter|carrier|bike|motorbike|car|truck|van|train|tram|jet|plane|aircraft|helicopter|vtol|dropship|mech|walker|tank|submarine|boat|vessel|transport|hovercraft|speeder|pod|wagon)\b/ui', $entry)) {
+			$score++;
+		}
+		if (preg_match('/\b(cockpit|hangar|crew|passengers|cargo|engine class|hull|armor plating|fuel|range|route|fleet|registry|license plate|pilot seat|chassis)\b/ui', $entry)) {
+			$score++;
+		}
+		if (preg_match('/\b(drive|flies|drives|pilots|boards|docks|launches|lands|cruises)\b/ui', $entry)) {
+			$score++;
+		}
+
+		return $score;
+	}
+
+	private function world_building_signal_score($entry) {
+		if (!is_string($entry) || trim($entry) === '') {
+			return 0;
+		}
+
+		$score = 0;
+		if (preg_match('/\b(law|custom|tradition|culture|religion|economy|currency|history|myth|legend|calendar|festival|era|timeline|government|politics|society|social class|magic system|rule of magic|canon|setting rule|world rule)\b/ui', $entry)) {
+			$score++;
+		}
+		if (preg_match('/\b(in this world|across the world|setting|worldbuilding|society|civilization|empire|kingdom|nation|region-wide|universal rule)\b/ui', $entry)) {
+			$score++;
+		}
+		if (preg_match('/\b(people believe|it is common|it is forbidden|it is legal|it is illegal|traditionally|by custom|by law|historically)\b/ui', $entry)) {
+			$score++;
+		}
+
+		return $score;
+	}
+
 	private function location_signal_score($entry) {
 		if (!is_string($entry) || trim($entry) === '') {
 			return 0;
@@ -437,6 +511,8 @@ class PMM_Parser {
 			'organizations_min_score' => 2,
 			'locations_min_score' => 2,
 			'technology_min_score' => 2,
+			'vehicles_min_score' => 2,
+			'world_building_min_score' => 2,
 		];
 	}
 
@@ -452,8 +528,14 @@ class PMM_Parser {
 		$settings['organizations_min_score'] = isset($stored['organizations_min_score']) ? max(1, min(3, (int) $stored['organizations_min_score'])) : $defaults['organizations_min_score'];
 		$settings['locations_min_score'] = isset($stored['locations_min_score']) ? max(1, min(3, (int) $stored['locations_min_score'])) : $defaults['locations_min_score'];
 		$settings['technology_min_score'] = isset($stored['technology_min_score']) ? max(1, min(3, (int) $stored['technology_min_score'])) : $defaults['technology_min_score'];
+		$settings['vehicles_min_score'] = isset($stored['vehicles_min_score']) ? max(1, min(3, (int) $stored['vehicles_min_score'])) : $defaults['vehicles_min_score'];
+		$settings['world_building_min_score'] = isset($stored['world_building_min_score']) ? max(1, min(3, (int) $stored['world_building_min_score'])) : $defaults['world_building_min_score'];
 
 		return $settings;
+	}
+
+	private function section_level_sections() {
+		return ['Relationships', 'NSFW', 'Notes', 'World Building'];
 	}
 
 	private function extract_leading_name($entry) {
@@ -602,7 +684,7 @@ class PMM_Parser {
 	}
 
 	private function merge_similar_entities($data) {
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems'];
+		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
 
 		foreach ($sections as $section) {
 			if (empty($data[$section]) || !is_array($data[$section])) {
@@ -729,7 +811,7 @@ class PMM_Parser {
 			'entity' => null,
 		];
 
-		foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems'] as $section) {
+		foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'] as $section) {
 			if (empty($data[$section]) || !is_array($data[$section])) {
 				continue;
 			}
@@ -779,7 +861,7 @@ class PMM_Parser {
 			$section = 'Notes';
 		}
 
-		if ($section === 'Notes' || $section === 'Relationships' || $section === 'NSFW' || $entity === '') {
+		if (in_array($section, $this->section_level_sections(), true) || $entity === '') {
 			if (!isset($data[$section]['__entries__']) || !is_array($data[$section]['__entries__'])) {
 				$data[$section]['__entries__'] = [];
 			}
@@ -828,7 +910,7 @@ class PMM_Parser {
 		$out = [];
 
 		foreach ($lines as $line) {
-			$parts = preg_split('/(?=\s*#\s*(?:Characters|Organizations|Locations|Technology\s*\/\s*Systems|Relationships|NSFW|Notes|New Entries|Raw Import)\b)/iu', (string) $line);
+			$parts = preg_split('/(?=\s*#\s*(?:Characters|Organizations|Locations|Technology\s*\/\s*Systems|Vehicles\s*\/\s*Transportation|World\s*Building|Relationships|NSFW|Notes|New Entries|Raw Import)\b)/iu', (string) $line);
 			foreach ($parts as $part) {
 				$trimmed = trim($part);
 				if ($trimmed !== '') {
@@ -857,7 +939,7 @@ class PMM_Parser {
 	}
 
 	private function collect_entities_by_section($data) {
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems'];
+		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
 		$out = [];
 
 		foreach ($sections as $section) {
@@ -884,7 +966,7 @@ class PMM_Parser {
 	}
 
 	private function diff_entities($before, $after) {
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems'];
+		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
 		$out = [];
 
 		foreach ($sections as $section) {

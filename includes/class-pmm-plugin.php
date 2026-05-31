@@ -29,6 +29,7 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_apply_similarity_review', [$this, 'apply_similarity_review']);
 		add_action('admin_post_pmm_apply_entity_review', [$this, 'apply_entity_review']);
 		add_action('admin_post_pmm_apply_questionable_review', [$this, 'apply_questionable_review']);
+		add_action('admin_post_pmm_apply_reclassification_review', [$this, 'apply_reclassification_review']);
 		add_action('admin_post_pmm_manage_hidden_entities', [$this, 'manage_hidden_entities']);
 		add_action('admin_post_pmm_preview_raw_import', [$this, 'preview_raw_import']);
 		add_action('admin_post_pmm_stage_raw_import', [$this, 'stage_raw_import']);
@@ -36,6 +37,8 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_clear_raw_import_preview', [$this, 'clear_raw_import_preview']);
 		add_action('admin_post_pmm_save_entity_update', [$this, 'save_entity_update']);
 		add_action('admin_post_pmm_save_entity_bulk_update', [$this, 'save_entity_bulk_update']);
+		add_action('admin_post_pmm_prune_entity_entries', [$this, 'prune_entity_entries']);
+		add_action('admin_post_pmm_save_global_entity_report', [$this, 'save_global_entity_report']);
 		add_action('admin_post_pmm_global_search_replace', [$this, 'global_search_replace']);
 		add_action('admin_post_pmm_save_alias_rules', [$this, 'save_alias_rules']);
 		add_action('admin_post_pmm_reprocess_last_output', [$this, 'reprocess_last_output']);
@@ -53,7 +56,7 @@ class PMM_Plugin {
 		check_ajax_referer('pmm_get_entities_for_section', 'nonce');
 
 		$section = isset($_REQUEST['section']) ? sanitize_text_field((string) wp_unslash($_REQUEST['section'])) : 'Characters';
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 		if (!in_array($section, $valid_sections, true)) {
 			$section = 'Characters';
 		}
@@ -63,7 +66,7 @@ class PMM_Plugin {
 			wp_send_json_success([
 				'section' => $section,
 				'entities' => [],
-				'allows_section_entries' => in_array($section, ['Notes', 'Relationships', 'NSFW'], true),
+				'allows_section_entries' => in_array($section, $this->section_level_sections(), true),
 			]);
 		}
 
@@ -73,7 +76,7 @@ class PMM_Plugin {
 		wp_send_json_success([
 			'section' => $section,
 			'entities' => $entities,
-			'allows_section_entries' => in_array($section, ['Notes', 'Relationships', 'NSFW'], true),
+			'allows_section_entries' => in_array($section, $this->section_level_sections(), true),
 		]);
 	}
 
@@ -124,8 +127,12 @@ class PMM_Plugin {
 		$format = isset($_POST['pmm_format']) ? sanitize_text_field(wp_unslash($_POST['pmm_format'])) : 'md';
 		$drop_sequences = isset($_POST['pmm_drop_sequences']) ? $this->sanitize_drop_sequences(wp_unslash($_POST['pmm_drop_sequences'])) : [];
 		$include_entity_report = true;
+		$rescan_sections = !empty($_POST['pmm_rescan_sections']) ? 1 : 0;
+		$rescan_confidence = isset($_POST['pmm_rescan_confidence']) ? max(70, min(98, (int) wp_unslash((string) $_POST['pmm_rescan_confidence']))) : (int) get_option('pmm_rescan_confidence', 84);
+		$rescan_preview_only = !empty($_POST['pmm_rescan_preview_only']) ? 1 : 0;
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request($_POST);
 		$classification_settings = $this->read_classification_settings_from_request($_POST);
+		$global_entity_report_settings = $this->read_global_entity_report_settings_from_request($_POST);
 		$questionable_settings = $this->read_questionable_settings_from_request($_POST);
 		$entity_related_match_mode = isset($_POST['pmm_entity_related_match_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_entity_related_match_mode'])) : 'normal';
 		if (!in_array($entity_related_match_mode, ['normal', 'strict'], true)) {
@@ -135,8 +142,12 @@ class PMM_Plugin {
 		update_option('pmm_include_entity_report', '1', false);
 		update_option('pmm_similarity_thresholds', $similarity_thresholds, false);
 		update_option('pmm_classification_settings', $classification_settings, false);
+		update_option('pmm_global_entity_report_settings', $global_entity_report_settings, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
+		update_option('pmm_rescan_sections', $rescan_sections, false);
+		update_option('pmm_rescan_confidence', $rescan_confidence, false);
+		update_option('pmm_rescan_preview_only', $rescan_preview_only, false);
 		update_option('pmm_last_mode', $mode, false);
 		update_option('pmm_last_format', $format, false);
 
@@ -182,6 +193,9 @@ class PMM_Plugin {
 			'format' => $format,
 			'drop_sequences' => $drop_sequences,
 			'include_entity_report' => $include_entity_report,
+			'rescan_sections' => !empty($rescan_sections),
+			'rescan_confidence' => $rescan_confidence,
+			'rescan_preview_only' => !empty($rescan_preview_only),
 			'entity_report' => [
 				'entities' => [],
 				'new_entities' => [],
@@ -229,8 +243,11 @@ class PMM_Plugin {
 		$format = $settings['format'];
 		$drop_sequences = $settings['drop_sequences'];
 		$include_entity_report = $settings['include_entity_report'];
+		$rescan_sections = !empty($settings['rescan_sections']);
+		$rescan_confidence = isset($settings['rescan_confidence']) ? (int) $settings['rescan_confidence'] : 84;
+		$rescan_preview_only = !empty($settings['rescan_preview_only']);
 
-		$this->start_processing_for_source_file($path, basename($path), $mode, $format, $drop_sequences, $include_entity_report, true);
+		$this->start_processing_for_source_file($path, basename($path), $mode, $format, $drop_sequences, $include_entity_report, true, $rescan_sections, $rescan_confidence, $rescan_preview_only);
 	}
 
 	public function process_recent_version() {
@@ -262,8 +279,11 @@ class PMM_Plugin {
 		$format = $settings['format'];
 		$drop_sequences = $settings['drop_sequences'];
 		$include_entity_report = $settings['include_entity_report'];
+		$rescan_sections = !empty($settings['rescan_sections']);
+		$rescan_confidence = isset($settings['rescan_confidence']) ? (int) $settings['rescan_confidence'] : 84;
+		$rescan_preview_only = !empty($settings['rescan_preview_only']);
 
-		$this->start_processing_for_source_file($path, $filename, $mode, $format, $drop_sequences, $include_entity_report, true);
+		$this->start_processing_for_source_file($path, $filename, $mode, $format, $drop_sequences, $include_entity_report, true, $rescan_sections, $rescan_confidence, $rescan_preview_only);
 	}
 
 	private function resolve_processing_settings_from_request() {
@@ -287,8 +307,12 @@ class PMM_Plugin {
 		}
 
 		$include_entity_report = true;
+		$rescan_sections = isset($_POST['pmm_rescan_sections']) ? (!empty($_POST['pmm_rescan_sections']) ? 1 : 0) : ((int) get_option('pmm_rescan_sections', 0));
+		$rescan_confidence = isset($_POST['pmm_rescan_confidence']) ? max(70, min(98, (int) wp_unslash((string) $_POST['pmm_rescan_confidence']))) : ((int) get_option('pmm_rescan_confidence', 84));
+		$rescan_preview_only = isset($_POST['pmm_rescan_preview_only']) ? (!empty($_POST['pmm_rescan_preview_only']) ? 1 : 0) : ((int) get_option('pmm_rescan_preview_only', 0));
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request(isset($_POST) ? $_POST : null);
 		$classification_settings = $this->read_classification_settings_from_request(isset($_POST) ? $_POST : null);
+		$global_entity_report_settings = $this->read_global_entity_report_settings_from_request(isset($_POST) ? $_POST : null);
 		$questionable_settings = $this->read_questionable_settings_from_request(isset($_POST) ? $_POST : null);
 
 		$entity_related_match_mode = isset($_POST['pmm_entity_related_match_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_entity_related_match_mode'])) : (string) get_option('pmm_entity_related_match_mode', 'normal');
@@ -302,14 +326,21 @@ class PMM_Plugin {
 		update_option('pmm_include_entity_report', '1', false);
 		update_option('pmm_similarity_thresholds', $similarity_thresholds, false);
 		update_option('pmm_classification_settings', $classification_settings, false);
+		update_option('pmm_global_entity_report_settings', $global_entity_report_settings, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
+		update_option('pmm_rescan_sections', $rescan_sections, false);
+		update_option('pmm_rescan_confidence', $rescan_confidence, false);
+		update_option('pmm_rescan_preview_only', $rescan_preview_only, false);
 
 		return [
 			'mode' => $mode,
 			'format' => $format,
 			'drop_sequences' => $drop_sequences,
 			'include_entity_report' => $include_entity_report,
+			'rescan_sections' => !empty($rescan_sections),
+			'rescan_confidence' => $rescan_confidence,
+			'rescan_preview_only' => !empty($rescan_preview_only),
 		];
 	}
 
@@ -505,7 +536,7 @@ class PMM_Plugin {
 			$ignored = [];
 		}
 
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 		$applied = 0;
 		$output_rule_changes = 0;
 		$log_rows = [];
@@ -794,7 +825,7 @@ class PMM_Plugin {
 		$removals = get_option('pmm_entry_removal_rules', []);
 		$removals = $this->normalize_entry_rule_items($removals);
 
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 		$applied = 0;
 		$reviewed = 0;
 		$changed = 0;
@@ -853,7 +884,7 @@ class PMM_Plugin {
 				}
 
 				$target_entity = trim((string) $entity);
-				if (!in_array($section, ['Notes', 'Relationships', 'NSFW'], true) && $target_entity === '') {
+				if (!in_array($section, $this->section_level_sections(), true) && $target_entity === '') {
 					$target_entity = trim((string) $original_entity);
 				}
 
@@ -976,6 +1007,138 @@ class PMM_Plugin {
 			'pmm_questionable_updated' => (string) $updated_entries,
 			'pmm_questionable_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
 			'pmm_questionable_expected_count' => (string) $expected_count,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function apply_reclassification_review() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_apply_reclassification_review');
+
+		$rows = isset($_POST['pmm_reclassification']) ? wp_unslash($_POST['pmm_reclassification']) : [];
+		if (!is_array($rows)) {
+			$rows = [];
+		}
+
+		$hidden = get_option('pmm_reclassification_hidden_entries', []);
+		$hidden = $this->normalize_entry_rule_items($hidden);
+		$data = $this->get_last_output_data_for_editing();
+		$cleaned = [];
+		$cleaned_changed = false;
+		$reviewed = 0;
+		$moved = 0;
+		$hidden_count = 0;
+		$kept_count = 0;
+
+		foreach ($rows as $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$original_section = isset($row['original_section']) ? sanitize_text_field((string) $row['original_section']) : '';
+			$original_entity = isset($row['original_entity']) ? sanitize_text_field((string) $row['original_entity']) : '';
+			$original_entry = isset($row['original_entry']) ? sanitize_textarea_field((string) $row['original_entry']) : '';
+			$target_section = isset($row['target_section']) ? sanitize_text_field((string) $row['target_section']) : $original_section;
+			$target_entity = isset($row['target_entity']) ? sanitize_text_field((string) $row['target_entity']) : $original_entity;
+
+			if ($original_section === '' || $original_entry === '') {
+				continue;
+			}
+
+			if (!in_array($target_section, $this->valid_sections(), true)) {
+				$target_section = $original_section;
+			}
+
+			$key = $this->build_entry_rule_key($original_section, $original_entity, $original_entry);
+			++$reviewed;
+
+			if ($action === 'hide') {
+				$hidden[$key] = [
+					'section' => $original_section,
+					'entity' => $original_entity,
+					'entry' => $original_entry,
+				];
+				++$hidden_count;
+				continue;
+			}
+
+			if ($action !== 'move') {
+				unset($hidden[$key]);
+				++$kept_count;
+				continue;
+			}
+
+			if (empty($data['content']) || !isset($data['stats']) || !is_array($data['stats'])) {
+				continue;
+			}
+			if (empty($cleaned) || !is_array($cleaned)) {
+				$cleaned = $this->get_cleaned_data_from_last_output($data);
+			}
+			if (empty($cleaned) || !is_array($cleaned)) {
+				continue;
+			}
+
+			if (in_array($target_section, $this->section_level_sections(), true)) {
+				$target_entity = '';
+			} elseif ($target_entity === '') {
+				$target_entity = $original_entity !== '' ? $original_entity : 'Unsorted Inbox';
+			}
+
+			$entry_changed = $this->move_entry_in_cleaned(
+				$cleaned,
+				$original_section,
+				$original_entity,
+				$original_entry,
+				$target_section,
+				$target_entity,
+				$original_entry
+			);
+
+			if ($entry_changed) {
+				$cleaned_changed = true;
+				unset($hidden[$key]);
+				++$moved;
+			}
+		}
+
+		update_option('pmm_reclassification_hidden_entries', $this->normalize_entry_rule_items($hidden), false);
+
+		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
+			$renderer = new PMM_Renderer();
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+			$output = $renderer->render($cleaned, $format);
+
+			$data['content'] = $output;
+			$data['cleaned_data'] = $cleaned;
+			$data['stats']['sections'] = count($cleaned);
+			$data['stats']['entities'] = PMM_Utils::count_entities($cleaned);
+			$data['stats']['bullets'] = PMM_Utils::count_bullets($cleaned);
+			$data['entity_report'] = $this->build_entity_report_payload([
+				'cleaned' => $cleaned,
+				'entity_report' => ['new_entities' => []],
+			]);
+
+			$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
+			$version_meta = $this->persist_versioned_output($output, $source_filename, $format);
+			if (!empty($version_meta['filename'])) {
+				$data['stats']['version_filename'] = (string) $version_meta['filename'];
+				$data['stats']['version_saved_at'] = (int) $version_meta['saved_at'];
+			}
+
+			set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
+		}
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_reclassification_saved' => (string) ($moved + $hidden_count + $kept_count),
+			'pmm_reclassification_reviewed' => (string) $reviewed,
+			'pmm_reclassification_moved' => (string) $moved,
+			'pmm_reclassification_hidden' => (string) $hidden_count,
+			'pmm_reclassification_kept' => (string) $kept_count,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -1132,7 +1295,7 @@ class PMM_Plugin {
 		if (empty($cleaned) || !is_array($cleaned)) {
 			$this->redirect_with_error('entity_update_missing');
 		}
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 		$payload = [
 			'section' => isset($_POST['pmm_edit_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_edit_section'])) : 'Characters',
 			'entity' => isset($_POST['pmm_edit_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_edit_entity'])) : '',
@@ -1181,9 +1344,9 @@ class PMM_Plugin {
 		}
 		$payload['section'] = $payload['target_section'];
 
-		if ($payload['target_entity'] !== '' && !in_array($payload['section'], ['Notes', 'Relationships', 'NSFW'], true)) {
+		if ($payload['target_entity'] !== '' && !in_array($payload['section'], $this->section_level_sections(), true)) {
 			$payload['entity'] = $payload['target_entity'];
-		} elseif (in_array($payload['section'], ['Notes', 'Relationships', 'NSFW'], true)) {
+		} elseif (in_array($payload['section'], $this->section_level_sections(), true)) {
 			$payload['entity'] = '';
 		}
 
@@ -1266,7 +1429,7 @@ class PMM_Plugin {
 		$entity_list = isset($_POST['pmm_bulk_entities']) ? (string) wp_unslash($_POST['pmm_bulk_entities']) : '';
 		$entries_text = isset($_POST['pmm_bulk_entries']) ? (string) wp_unslash($_POST['pmm_bulk_entries']) : '';
 
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 		if (!in_array($section, $valid_sections, true)) {
 			$section = 'Characters';
 		}
@@ -1326,6 +1489,279 @@ class PMM_Plugin {
 			'pmm_entity_updated' => 1,
 			'pmm_edit_section' => $section,
 			'pmm_edit_entity' => isset($targets[0]) ? $targets[0] : '',
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function prune_entity_entries() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_prune_entity_entries');
+
+		$data = get_transient('pmm_last_output_' . get_current_user_id());
+		if (empty($data['content']) || !isset($data['stats']) || !is_array($data['stats'])) {
+			$this->redirect_with_error('entity_update_missing');
+		}
+
+		$cleaned = $this->get_cleaned_data_from_last_output($data);
+		if (empty($cleaned) || !is_array($cleaned)) {
+			$this->redirect_with_error('entity_update_missing');
+		}
+
+		$section = isset($_POST['pmm_prune_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_section'])) : 'Characters';
+		$entity = isset($_POST['pmm_prune_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_entity'])) : '';
+		$max_keep = isset($_POST['pmm_prune_max_keep']) ? max(50, min(5000, (int) $_POST['pmm_prune_max_keep'])) : 1500;
+		$remove_stale = !empty($_POST['pmm_prune_remove_stale']);
+		$preview_only = !empty($_POST['pmm_prune_preview_only']);
+		$similarity_threshold = isset($_POST['pmm_prune_similarity_threshold']) ? (float) wp_unslash((string) $_POST['pmm_prune_similarity_threshold']) : 0.90;
+		$similarity_threshold = min(0.98, max(0.75, $similarity_threshold));
+
+		$valid_sections = $this->valid_sections();
+		if (!in_array($section, $valid_sections, true)) {
+			$section = 'Characters';
+		}
+
+		if (!isset($cleaned[$section]) || !is_array($cleaned[$section])) {
+			$this->redirect_with_error('entity_update_missing');
+		}
+
+		$bucket_key = in_array($section, $this->section_level_sections(), true) && $entity === '' ? '__entries__' : $entity;
+		if ($bucket_key === '' || !isset($cleaned[$section][$bucket_key]) || !is_array($cleaned[$section][$bucket_key])) {
+			$this->redirect_with_error('entity_update_missing');
+		}
+
+		$stats = [
+			'original' => count((array) $cleaned[$section][$bucket_key]),
+			'exact_duplicates' => 0,
+			'near_duplicates' => 0,
+			'stale_removed' => 0,
+			'critical_preserved' => 0,
+			'trimmed' => 0,
+		];
+		$report = [
+			'exact_duplicates' => [],
+			'near_duplicates' => [],
+			'stale_removed' => [],
+			'trimmed' => [],
+		];
+
+		$pruned_items = $this->prune_entity_entry_list((array) $cleaned[$section][$bucket_key], $max_keep, $remove_stale, $similarity_threshold, $stats, $report);
+
+		if ($preview_only) {
+			set_transient('pmm_prune_preview_' . get_current_user_id(), [
+				'section' => $section,
+				'entity' => $entity,
+				'max_keep' => $max_keep,
+				'similarity_threshold' => $similarity_threshold,
+				'remove_stale' => $remove_stale ? 1 : 0,
+				'stats' => $stats,
+				'report' => [
+					'exact_duplicates' => array_slice((array) $report['exact_duplicates'], 0, 200),
+					'near_duplicates' => array_slice((array) $report['near_duplicates'], 0, 200),
+					'stale_removed' => array_slice((array) $report['stale_removed'], 0, 200),
+					'trimmed' => array_slice((array) $report['trimmed'], 0, 300),
+				],
+			], 30 * MINUTE_IN_SECONDS);
+
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_prune_preview' => 1,
+				'pmm_prune_section' => $section,
+				'pmm_prune_entity' => $entity,
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		delete_transient('pmm_prune_preview_' . get_current_user_id());
+		$cleaned[$section][$bucket_key] = $pruned_items;
+
+		$renderer = new PMM_Renderer();
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$output = $renderer->render($cleaned, $format);
+
+		$data['content'] = $output;
+		$data['cleaned_data'] = $cleaned;
+		$data['stats']['sections'] = count($cleaned);
+		$data['stats']['entities'] = PMM_Utils::count_entities($cleaned);
+		$data['stats']['bullets'] = PMM_Utils::count_bullets($cleaned);
+		$data['entity_report'] = $this->build_entity_report_payload([
+			'cleaned' => $cleaned,
+			'entity_report' => ['new_entities' => []],
+		]);
+
+		$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
+		$version_meta = $this->persist_versioned_output($output, $source_filename, $format);
+		if (!empty($version_meta['filename'])) {
+			$data['stats']['version_filename'] = (string) $version_meta['filename'];
+			$data['stats']['version_saved_at'] = (int) $version_meta['saved_at'];
+		}
+
+		set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
+
+		$kept = count((array) $cleaned[$section][$bucket_key]);
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_entity_pruned' => 1,
+			'pmm_prune_section' => $section,
+			'pmm_prune_entity' => $entity,
+			'pmm_prune_before' => (string) $stats['original'],
+			'pmm_prune_after' => (string) $kept,
+			'pmm_prune_exact' => (string) $stats['exact_duplicates'],
+			'pmm_prune_near' => (string) $stats['near_duplicates'],
+			'pmm_prune_stale' => (string) $stats['stale_removed'],
+			'pmm_prune_critical' => (string) $stats['critical_preserved'],
+			'pmm_prune_trimmed' => (string) $stats['trimmed'],
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function save_global_entity_report() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_save_global_entity_report');
+
+		$data = get_transient('pmm_last_output_' . get_current_user_id());
+		if (empty($data['content']) || !isset($data['stats']) || !is_array($data['stats'])) {
+			$this->redirect_with_error('entity_update_missing');
+		}
+
+		$cleaned = $this->get_cleaned_data_from_last_output($data);
+		if (empty($cleaned) || !is_array($cleaned)) {
+			$this->redirect_with_error('entity_update_missing');
+		}
+
+		$entity_name = isset($_POST['pmm_global_entity_name']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_global_entity_name'])) : '';
+		$page_number = isset($_POST['pmm_global_entity_page']) ? max(1, (int) $_POST['pmm_global_entity_page']) : 1;
+		$per_page = isset($_POST['pmm_global_entity_per_page']) ? max(25, min(100, (int) $_POST['pmm_global_entity_per_page'])) : 50;
+
+		$snapshot = isset($_POST['pmm_global_snapshot']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_global_snapshot'])) : '';
+		$current_snapshot = md5((string) $data['content']);
+		if ($snapshot !== '' && !hash_equals($current_snapshot, $snapshot)) {
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_error' => 'global_entity_stale',
+				'pmm_global_entity_name' => $entity_name,
+				'pmm_global_entity_page' => $page_number,
+				'pmm_global_entity_per_page' => $per_page,
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$rows_json = isset($_POST['pmm_global_rows_json']) ? (string) wp_unslash($_POST['pmm_global_rows_json']) : '';
+		$rows = json_decode($rows_json, true);
+		if (!is_array($rows)) {
+			$rows = [];
+		}
+		$rows = array_slice($rows, 0, 300);
+
+		$valid_sections = $this->valid_sections();
+		$section_level_sections = $this->section_level_sections();
+
+		$reviewed = 0;
+		$changed = 0;
+		$moved = 0;
+		$removed = 0;
+		$updated = 0;
+
+		foreach ($rows as $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$source_section = isset($row['source_section']) ? sanitize_text_field((string) $row['source_section']) : '';
+			$source_entity = isset($row['source_entity']) ? sanitize_text_field((string) $row['source_entity']) : '';
+			$source_entry = isset($row['source_entry']) ? PMM_Utils::normalize_bullet((string) $row['source_entry']) : '';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$target_section = isset($row['target_section']) ? sanitize_text_field((string) $row['target_section']) : $source_section;
+			$target_entity = isset($row['target_entity']) ? sanitize_text_field((string) $row['target_entity']) : $source_entity;
+			$target_entry = isset($row['entry']) ? PMM_Utils::normalize_bullet((string) $row['entry']) : $source_entry;
+
+			if ($source_entry === '' || !in_array($source_section, $valid_sections, true)) {
+				continue;
+			}
+
+			if (!in_array($action, ['keep', 'move', 'remove'], true)) {
+				$action = 'keep';
+			}
+
+			if (!in_array($target_section, $valid_sections, true)) {
+				$target_section = $source_section;
+			}
+
+			if (in_array($target_section, $section_level_sections, true)) {
+				$target_entity = '';
+			} else {
+				$target_entity = $this->normalize_entity_target_name($target_section, $source_entity, $target_entity);
+			}
+
+			if ($target_entry === '') {
+				$target_entry = $source_entry;
+			}
+
+			++$reviewed;
+
+			if ($action === 'keep') {
+				continue;
+			}
+
+			if ($action === 'remove') {
+				if ($this->remove_entry_from_cleaned($cleaned, $source_section, $source_entity, $source_entry)) {
+					++$changed;
+					++$removed;
+				}
+				continue;
+			}
+
+			if ($this->move_entry_in_cleaned($cleaned, $source_section, $source_entity, $source_entry, $target_section, $target_entity, $target_entry)) {
+				++$changed;
+				if ($source_section !== $target_section || $source_entity !== $target_entity) {
+					++$moved;
+				}
+				if (PMM_Utils::fingerprint($source_entry) !== PMM_Utils::fingerprint($target_entry)) {
+					++$updated;
+				}
+			}
+		}
+
+		if ($changed > 0) {
+			$renderer = new PMM_Renderer();
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+			$output = $renderer->render($cleaned, $format);
+
+			$data['content'] = $output;
+			$data['cleaned_data'] = $cleaned;
+			$data['stats']['sections'] = count($cleaned);
+			$data['stats']['entities'] = PMM_Utils::count_entities($cleaned);
+			$data['stats']['bullets'] = PMM_Utils::count_bullets($cleaned);
+			$data['entity_report'] = $this->build_entity_report_payload([
+				'cleaned' => $cleaned,
+				'entity_report' => ['new_entities' => []],
+			]);
+
+			$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
+			$version_meta = $this->persist_versioned_output($output, $source_filename, $format);
+			if (!empty($version_meta['filename'])) {
+				$data['stats']['version_filename'] = (string) $version_meta['filename'];
+				$data['stats']['version_saved_at'] = (int) $version_meta['saved_at'];
+			}
+
+			set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
+		}
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_global_entity_saved' => (string) $changed,
+			'pmm_global_entity_reviewed' => (string) $reviewed,
+			'pmm_global_entity_moved' => (string) $moved,
+			'pmm_global_entity_removed' => (string) $removed,
+			'pmm_global_entity_updated' => (string) $updated,
+			'pmm_global_entity_name' => $entity_name,
+			'pmm_global_entity_page' => $page_number,
+			'pmm_global_entity_per_page' => $per_page,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -1413,7 +1849,10 @@ class PMM_Plugin {
 
 		check_admin_referer('pmm_reprocess_last_output');
 
-		if (!$this->start_reprocess_from_last_output()) {
+		$rescan_sections = isset($_POST['pmm_rescan_sections']) ? !empty($_POST['pmm_rescan_sections']) : null;
+		$rescan_confidence = isset($_POST['pmm_rescan_confidence']) ? max(70, min(98, (int) wp_unslash((string) $_POST['pmm_rescan_confidence']))) : null;
+		$rescan_preview_only = isset($_POST['pmm_rescan_preview_only']) ? !empty($_POST['pmm_rescan_preview_only']) : null;
+		if (!$this->start_reprocess_from_last_output($rescan_sections, $rescan_confidence, $rescan_preview_only)) {
 			$this->redirect_with_error('reprocess_missing');
 		}
 	}
@@ -1621,6 +2060,21 @@ class PMM_Plugin {
 	}
 
 	private function finish_render($state) {
+		$reclassification_scan_count = 0;
+		$reclassification_moved = 0;
+		$reclassification_proposed = 0;
+		$reclassification_preview_rows = [];
+		$rescan_confidence = isset($state['rescan_confidence']) ? max(70, min(98, (int) $state['rescan_confidence'])) : 84;
+		$rescan_preview_only = !empty($state['rescan_preview_only']);
+		if (!empty($state['rescan_sections'])) {
+			$reclassified = $this->auto_reclassify_cleaned_entries($state['cleaned'], $rescan_confidence, $rescan_preview_only);
+			$state['cleaned'] = $reclassified['data'];
+			$reclassification_scan_count = (int) $reclassified['evaluated'];
+			$reclassification_moved = (int) $reclassified['moved'];
+			$reclassification_proposed = (int) $reclassified['proposed'];
+			$reclassification_preview_rows = isset($reclassified['preview_rows']) && is_array($reclassified['preview_rows']) ? $reclassified['preview_rows'] : [];
+		}
+
 		$filtered = $this->filter_nsfw_without_character_refs($state['cleaned']);
 		$state['cleaned'] = $filtered['data'];
 		$state['counters']['removed_nsfw_non_character'] = isset($state['counters']['removed_nsfw_non_character']) ? (int) $state['counters']['removed_nsfw_non_character'] + (int) $filtered['removed'] : (int) $filtered['removed'];
@@ -1652,6 +2106,13 @@ class PMM_Plugin {
 			'format' => $state['format'],
 			'original_filename' => $state['source_filename'],
 			'staged_raw_import_rows' => isset($state['staged_raw_import_rows']) ? count((array) $state['staged_raw_import_rows']) : 0,
+			'rescan_sections' => !empty($state['rescan_sections']) ? 1 : 0,
+			'rescan_confidence' => $rescan_confidence,
+			'rescan_preview_only' => $rescan_preview_only ? 1 : 0,
+			'reclassification_scanned' => $reclassification_scan_count,
+			'reclassification_moved' => $reclassification_moved,
+			'reclassification_proposed' => $reclassification_proposed,
+			'reclassification_preview_rows' => array_slice($reclassification_preview_rows, 0, 120),
 		];
 		$this->clear_output_rules_dirty();
 		delete_transient($this->get_staged_raw_import_key());
@@ -1699,7 +2160,7 @@ class PMM_Plugin {
 
 		$prefix = '# ' . $section . "\n";
 
-		if ($entity !== '' && !in_array($section, ['Relationships', 'NSFW', 'Notes', 'New Entries'], true)) {
+		if ($entity !== '' && !in_array($section, array_merge($this->section_level_sections(), ['New Entries']), true)) {
 			$prefix .= $entity . "\n";
 		}
 
@@ -1725,7 +2186,7 @@ class PMM_Plugin {
 				continue;
 			}
 
-			if (in_array($context['section'], ['Relationships', 'NSFW', 'Notes', 'New Entries'], true)) {
+			if (in_array($context['section'], array_merge($this->section_level_sections(), ['New Entries']), true)) {
 				continue;
 			}
 
@@ -1738,7 +2199,7 @@ class PMM_Plugin {
 	}
 
 	private function extract_section_from_line($line) {
-		if (!preg_match('/^#?\s*(characters|organizations|locations|technology\s*\/\s*systems|relationships|nsfw|notes|new entries|raw import)\b/iu', $line, $m)) {
+		if (!preg_match('/^#?\s*(characters|organizations|locations|technology\s*\/\s*systems|vehicles\s*\/\s*transportation|world\s*building|relationships|nsfw|notes|new entries|raw import)\b/iu', $line, $m)) {
 			return null;
 		}
 
@@ -1748,6 +2209,8 @@ class PMM_Plugin {
 			'organizations' => 'Organizations',
 			'locations' => 'Locations',
 			'technology / systems' => 'Technology / Systems',
+			'vehicles / transportation' => 'Vehicles / Transportation',
+			'world building' => 'World Building',
 			'relationships' => 'Relationships',
 			'nsfw' => 'NSFW',
 			'notes' => 'Notes',
@@ -1764,6 +2227,8 @@ class PMM_Plugin {
 			'Organizations' => [],
 			'Locations' => [],
 			'Technology / Systems' => [],
+			'Vehicles / Transportation' => [],
+			'World Building' => [],
 			'Relationships' => [],
 			'NSFW' => [],
 			'Notes' => [],
@@ -1928,7 +2393,7 @@ class PMM_Plugin {
 	}
 
 	private function serialize_raw_import_table_rows($rows) {
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 		$lines = [];
 
 		foreach ((array) $rows as $row) {
@@ -1957,7 +2422,7 @@ class PMM_Plugin {
 	private function parse_staged_raw_import_rows_text($text) {
 		$lines = preg_split('/\r\n|\r|\n/u', (string) $text);
 		$rows = [];
-		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Relationships', 'NSFW', 'Notes'];
+		$valid_sections = $this->valid_sections();
 
 		foreach ((array) $lines as $line) {
 			$line = trim((string) $line);
@@ -2088,7 +2553,7 @@ class PMM_Plugin {
 		}
 
 		if ($action === 'delete') {
-			if (in_array($section, ['Notes', 'Relationships', 'NSFW'], true) && $entity === '') {
+			if (in_array($section, $this->section_level_sections(), true) && $entity === '') {
 				$cleaned[$section]['__entries__'] = [];
 			} elseif ($entity !== '' && isset($cleaned[$section][$entity])) {
 				unset($cleaned[$section][$entity]);
@@ -2096,7 +2561,7 @@ class PMM_Plugin {
 			return $cleaned;
 		}
 
-		if (in_array($section, ['Notes', 'Relationships', 'NSFW'], true) && $entity === '') {
+		if (in_array($section, $this->section_level_sections(), true) && $entity === '') {
 			if (!isset($cleaned[$section]['__entries__']) || !is_array($cleaned[$section]['__entries__'])) {
 				$cleaned[$section]['__entries__'] = [];
 			}
@@ -2219,7 +2684,7 @@ class PMM_Plugin {
 		$entity = sanitize_text_field((string) $entity);
 		$target_entity = sanitize_text_field((string) $target_entity);
 
-		if (in_array($section, ['Notes', 'Relationships', 'NSFW'], true)) {
+		if (in_array($section, $this->section_level_sections(), true)) {
 			return '';
 		}
 
@@ -2240,7 +2705,7 @@ class PMM_Plugin {
 			return $cleaned;
 		}
 
-		if (in_array($section, ['Notes', 'Relationships', 'NSFW'], true)) {
+		if (in_array($section, $this->section_level_sections(), true)) {
 			return $cleaned;
 		}
 
@@ -2319,7 +2784,7 @@ class PMM_Plugin {
 		}
 	}
 
-	private function start_processing_for_source_file($path, $source_filename, $mode, $format, $drop_sequences, $include_entity_report, $source_is_persistent) {
+	private function start_processing_for_source_file($path, $source_filename, $mode, $format, $drop_sequences, $include_entity_report, $source_is_persistent, $rescan_sections = false, $rescan_confidence = 84, $rescan_preview_only = false) {
 		$job_id = $this->generate_job_id();
 
 		$state = [
@@ -2333,6 +2798,9 @@ class PMM_Plugin {
 			'format' => $format,
 			'drop_sequences' => is_array($drop_sequences) ? $drop_sequences : [],
 			'include_entity_report' => !empty($include_entity_report),
+			'rescan_sections' => !empty($rescan_sections),
+			'rescan_confidence' => max(70, min(98, (int) $rescan_confidence)),
+			'rescan_preview_only' => !empty($rescan_preview_only),
 			'entity_report' => [
 				'entities' => [],
 				'new_entities' => [],
@@ -2586,7 +3054,7 @@ class PMM_Plugin {
 		})));
 
 		if (!empty($entry_terms)) {
-			$sections = ['Relationships', 'NSFW', 'Notes', 'New Entries'];
+			$sections = ['Relationships', 'NSFW', 'Notes', 'World Building', 'New Entries'];
 			$keys = ['__entries__', '__unassigned__'];
 			foreach ($sections as $section) {
 				if (empty($data[$section]) || !is_array($data[$section])) {
@@ -2710,6 +3178,7 @@ class PMM_Plugin {
 			'organizations' => 0.70,
 			'locations' => 0.66,
 			'technology' => 0.72,
+			'vehicles' => 0.70,
 		];
 	}
 
@@ -2742,6 +3211,7 @@ class PMM_Plugin {
 			'organizations' => 'pmm_similarity_threshold_organizations',
 			'locations' => 'pmm_similarity_threshold_locations',
 			'technology' => 'pmm_similarity_threshold_technology',
+			'vehicles' => 'pmm_similarity_threshold_vehicles',
 		];
 
 		$current = $this->get_similarity_thresholds_option();
@@ -2768,6 +3238,8 @@ class PMM_Plugin {
 			'organizations_min_score' => 2,
 			'locations_min_score' => 2,
 			'technology_min_score' => 2,
+			'vehicles_min_score' => 2,
+			'world_building_min_score' => 2,
 		];
 	}
 
@@ -2783,6 +3255,8 @@ class PMM_Plugin {
 		$settings['organizations_min_score'] = isset($stored['organizations_min_score']) ? max(1, min(3, (int) $stored['organizations_min_score'])) : $defaults['organizations_min_score'];
 		$settings['locations_min_score'] = isset($stored['locations_min_score']) ? max(1, min(3, (int) $stored['locations_min_score'])) : $defaults['locations_min_score'];
 		$settings['technology_min_score'] = isset($stored['technology_min_score']) ? max(1, min(3, (int) $stored['technology_min_score'])) : $defaults['technology_min_score'];
+		$settings['vehicles_min_score'] = isset($stored['vehicles_min_score']) ? max(1, min(3, (int) $stored['vehicles_min_score'])) : $defaults['vehicles_min_score'];
+		$settings['world_building_min_score'] = isset($stored['world_building_min_score']) ? max(1, min(3, (int) $stored['world_building_min_score'])) : $defaults['world_building_min_score'];
 
 		return $settings;
 	}
@@ -2799,6 +3273,8 @@ class PMM_Plugin {
 			'organizations_min_score' => 'pmm_org_min_score',
 			'locations_min_score' => 'pmm_location_min_score',
 			'technology_min_score' => 'pmm_technology_min_score',
+			'vehicles_min_score' => 'pmm_vehicles_min_score',
+			'world_building_min_score' => 'pmm_world_building_min_score',
 		];
 
 		foreach ($map as $key => $field) {
@@ -2808,6 +3284,34 @@ class PMM_Plugin {
 			$current[$key] = max(1, min(3, (int) wp_unslash((string) $request[$field])));
 		}
 
+		return $current;
+	}
+
+	private function global_entity_report_settings_defaults() {
+		return [
+			'include_mentions' => 1,
+		];
+	}
+
+	private function get_global_entity_report_settings_option() {
+		$defaults = $this->global_entity_report_settings_defaults();
+		$stored = get_option('pmm_global_entity_report_settings', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$settings = $defaults;
+		$settings['include_mentions'] = !empty($stored['include_mentions']) ? 1 : 0;
+		return $settings;
+	}
+
+	private function read_global_entity_report_settings_from_request($request) {
+		if (!is_array($request)) {
+			return $this->get_global_entity_report_settings_option();
+		}
+
+		$current = $this->get_global_entity_report_settings_option();
+		$current['include_mentions'] = !empty($request['pmm_global_entity_include_mentions']) ? 1 : 0;
 		return $current;
 	}
 
@@ -2861,6 +3365,8 @@ class PMM_Plugin {
 		$similar_candidates = $this->build_similar_entity_candidates($final_entities, $similar_total_found, $similar_truncated);
 		$questionable_total_found = 0;
 		$questionable_entries = $this->build_questionable_entry_candidates($state['cleaned'], $questionable_total_found);
+		$reclassification_total_found = 0;
+		$reclassification_candidates = $this->build_reclassification_candidates($state['cleaned'], $reclassification_total_found);
 
 		return [
 			'entities' => $final_entities,
@@ -2870,11 +3376,13 @@ class PMM_Plugin {
 			'similar_candidates_truncated' => $similar_truncated ? 1 : 0,
 			'questionable_entries' => $questionable_entries,
 			'questionable_entries_total_found' => (int) $questionable_total_found,
+			'reclassification_candidates' => $reclassification_candidates,
+			'reclassification_candidates_total_found' => (int) $reclassification_total_found,
 		];
 	}
 
 	private function extract_entities_by_section($data) {
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems'];
+		$sections = $this->entity_sections();
 		$out = [];
 
 		foreach ($sections as $section) {
@@ -2901,7 +3409,7 @@ class PMM_Plugin {
 	}
 
 	private function build_similar_entity_candidates($entity_groups, &$total_found = 0, &$was_truncated = false) {
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems'];
+		$sections = $this->entity_sections();
 		$ignored = get_option('pmm_similarity_ignored_pairs', []);
 		if (!is_array($ignored)) {
 			$ignored = [];
@@ -3084,6 +3592,10 @@ class PMM_Plugin {
 			return (float) $thresholds['organizations'];
 		}
 
+		if ($section === 'Vehicles / Transportation') {
+			return (float) $thresholds['vehicles'];
+		}
+
 		return (float) $thresholds['technology'];
 	}
 
@@ -3144,6 +3656,279 @@ class PMM_Plugin {
 		$total_found = count($candidates);
 
 		return array_slice($candidates, 0, 120);
+	}
+
+	private function build_reclassification_candidates($data, &$total_found = 0) {
+		$hidden = get_option('pmm_reclassification_hidden_entries', []);
+		$hidden = $this->normalize_entry_rule_items($hidden);
+		$settings = $this->get_classification_settings_option();
+		$candidates = [];
+
+		foreach ((array) $data as $section => $content) {
+			if (!is_array($content) || $section === 'New Entries') {
+				continue;
+			}
+
+			foreach ($content as $entity => $items) {
+				if (!is_array($items)) {
+					continue;
+				}
+
+				$entity_name = (strpos((string) $entity, '__') === 0) ? '' : (string) $entity;
+				foreach ($items as $entry) {
+					$entry = PMM_Utils::normalize_bullet((string) $entry);
+					if ($entry === '') {
+						continue;
+					}
+
+					$key = $this->build_entry_rule_key((string) $section, $entity_name, $entry);
+					if (isset($hidden[$key])) {
+						continue;
+					}
+
+					$suggestion = $this->detect_reclassification_suggestion((string) $section, $entity_name, $entry, $settings);
+					if ($suggestion === null) {
+						continue;
+					}
+
+					$candidates[] = [
+						'id' => md5($key),
+						'original_section' => (string) $section,
+						'original_entity' => $entity_name,
+						'original_entry' => $entry,
+						'target_section' => $suggestion['section'],
+						'target_entity' => $suggestion['entity'],
+						'reason' => $suggestion['reason'],
+						'confidence' => (int) $suggestion['confidence'],
+					];
+				}
+			}
+		}
+
+		usort($candidates, static function($a, $b) {
+			if ((int) $a['confidence'] === (int) $b['confidence']) {
+				return strcmp((string) $a['original_entry'], (string) $b['original_entry']);
+			}
+			return ((int) $a['confidence'] > (int) $b['confidence']) ? -1 : 1;
+		});
+
+		$total_found = count($candidates);
+		return array_slice($candidates, 0, 120);
+	}
+
+	private function detect_reclassification_suggestion($section, $entity, $entry, $settings) {
+		$looks_like_character_fact = !empty($settings['character_veto']) && $this->reclassification_looks_like_character_fact($entry);
+		if ($looks_like_character_fact && $section !== 'Characters') {
+			$target_entity = $entity !== '' ? $entity : $this->extract_leading_name_for_reclassification($entry);
+			return [
+				'section' => 'Characters',
+				'entity' => $target_entity !== '' ? $target_entity : 'Unsorted Inbox',
+				'reason' => 'character-style fact detected outside Characters',
+				'confidence' => 91,
+			];
+		}
+
+		$scores = [
+			'Organizations' => $this->reclassification_organization_score($entry),
+			'Locations' => $this->reclassification_location_score($entry),
+			'Technology / Systems' => $this->reclassification_technology_score($entry),
+			'Vehicles / Transportation' => $this->reclassification_vehicle_score($entry),
+			'World Building' => $this->reclassification_world_building_score($entry),
+		];
+		$minimums = [
+			'Organizations' => max(1, min(3, (int) $settings['organizations_min_score'])),
+			'Locations' => max(1, min(3, (int) $settings['locations_min_score'])),
+			'Technology / Systems' => max(1, min(3, (int) $settings['technology_min_score'])),
+			'Vehicles / Transportation' => max(1, min(3, (int) $settings['vehicles_min_score'])),
+			'World Building' => max(1, min(3, (int) $settings['world_building_min_score'])),
+		];
+
+		$current_score = isset($scores[$section]) ? (int) $scores[$section] : 0;
+		$best_section = null;
+		$best_score = 0;
+		foreach ($scores as $candidate_section => $score) {
+			if ($candidate_section === $section || $score < $minimums[$candidate_section]) {
+				continue;
+			}
+			if ($score > $best_score) {
+				$best_section = $candidate_section;
+				$best_score = $score;
+			}
+		}
+
+		if ($best_section === null || $best_score <= $current_score) {
+			return null;
+		}
+
+		$target_entity = '';
+		if (!in_array($best_section, $this->section_level_sections(), true)) {
+			$target_entity = $entity !== '' ? $entity : $this->extract_leading_name_for_reclassification($entry);
+			if ($target_entity === '') {
+				$target_entity = ($best_section === 'Vehicles / Transportation') ? 'Unsorted Vehicle' : 'Unsorted Inbox';
+			}
+		}
+
+		return [
+			'section' => $best_section,
+			'entity' => $target_entity,
+			'reason' => 'stronger ' . strtolower($best_section) . ' signal than current section',
+			'confidence' => min(98, 70 + ($best_score * 8) + max(0, ($best_score - $current_score) * 4)),
+		];
+	}
+
+	private function reclassification_looks_like_character_fact($entry) {
+		return preg_match('/\b(he|she|they|him|her|his|hers|their|theirs|years? old|hair|eyes|voice|smile|wears|said|asked|replied|married|dating|mother|father|sister|brother|friend|lover)\b/i', (string) $entry) === 1;
+	}
+
+	private function reclassification_organization_score($entry) {
+		$score = 0;
+		if (preg_match('/\b(company|corporation|corp|agency|council|guild|institute|foundation|committee|department|bureau|division|board|staff|charter|mandate)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		if (preg_match('/\b(headquartered|subsidiary|operations|funding|contract|employees|director|ceo)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		return $score;
+	}
+
+	private function reclassification_location_score($entry) {
+		$score = 0;
+		if (preg_match('/\b(city|town|village|station|base|campus|facility|compound|bunker|street|avenue|port|harbor|district|region|sector|tower|suite|room)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		if (preg_match('/\b(located|situated|coordinates|terrain|climate|population|entrance|exit|nearby|surrounding)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		return $score;
+	}
+
+	private function reclassification_technology_score($entry) {
+		$score = 0;
+		if (preg_match('/\b(protocol|interface|system|drone|neural|software|hardware|algorithm|sensor|reactor|database|network|platform|device|framework|telemetry|autopilot)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		if (preg_match('/\b(version|model|spec|build|release|patch|upgrade|latency|throughput|diagnostic|integration|deployment)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		return $score;
+	}
+
+	private function reclassification_vehicle_score($entry) {
+		$score = 0;
+		if (preg_match('/\b(ship|shuttle|fighter|freighter|carrier|bike|car|truck|train|jet|plane|aircraft|vtol|dropship|mech|tank|boat|vessel|transport|hovercraft|speeder)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		if (preg_match('/\b(cockpit|hangar|crew|passengers|cargo|hull|fuel|range|route|fleet|pilot|docks|launches|lands)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		return $score;
+	}
+
+	private function reclassification_world_building_score($entry) {
+		$score = 0;
+		if (preg_match('/\b(law|custom|tradition|culture|religion|economy|currency|history|myth|legend|calendar|festival|era|timeline|government|politics|society|magic system|setting rule|world rule)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		if (preg_match('/\b(people believe|it is common|it is forbidden|it is legal|it is illegal|traditionally|by custom|by law|historically)\b/ui', (string) $entry)) {
+			++$score;
+		}
+		return $score;
+	}
+
+	private function extract_leading_name_for_reclassification($entry) {
+		if (preg_match('/^([A-Z][A-Za-z0-9_\-()\'\/.& ]{1,80}?)(?::|\s+-\s+|\s+is\b)/u', (string) $entry, $matches)) {
+			return trim((string) $matches[1]);
+		}
+
+		return '';
+	}
+
+	private function auto_reclassify_cleaned_entries($cleaned, $min_confidence = 84, $preview_only = false) {
+		if (!is_array($cleaned) || empty($cleaned)) {
+			return [
+				'data' => is_array($cleaned) ? $cleaned : [],
+				'evaluated' => 0,
+				'moved' => 0,
+				'proposed' => 0,
+				'preview_rows' => [],
+			];
+		}
+
+		$settings = $this->get_classification_settings_option();
+		$min_confidence = max(70, min(98, (int) $min_confidence));
+		$evaluated = 0;
+		$moved = 0;
+		$proposed = 0;
+		$preview_rows = [];
+		$snapshot = $cleaned;
+
+		foreach ((array) $snapshot as $section => $content) {
+			if (!is_array($content) || $section === 'New Entries') {
+				continue;
+			}
+
+			foreach ((array) $content as $entity => $items) {
+				if (!is_array($items)) {
+					continue;
+				}
+
+				$entity_name = (strpos((string) $entity, '__') === 0) ? '' : (string) $entity;
+				foreach ((array) $items as $entry) {
+					$entry = PMM_Utils::normalize_bullet((string) $entry);
+					if ($entry === '') {
+						continue;
+					}
+
+					++$evaluated;
+					$suggestion = $this->detect_reclassification_suggestion((string) $section, $entity_name, $entry, $settings);
+					if ($suggestion === null) {
+						continue;
+					}
+
+					$confidence = isset($suggestion['confidence']) ? (int) $suggestion['confidence'] : 0;
+					if ($confidence < $min_confidence) {
+						continue;
+					}
+
+					$target_section = isset($suggestion['section']) ? (string) $suggestion['section'] : (string) $section;
+					$target_entity = isset($suggestion['entity']) ? trim((string) $suggestion['entity']) : $entity_name;
+					if (in_array($target_section, $this->section_level_sections(), true)) {
+						$target_entity = '';
+					} elseif ($target_entity === '') {
+						$target_entity = $entity_name !== '' ? $entity_name : 'Unsorted Inbox';
+					}
+
+					++$proposed;
+					if (count($preview_rows) < 120) {
+						$preview_rows[] = [
+							'from_section' => (string) $section,
+							'from_entity' => $entity_name,
+							'to_section' => $target_section,
+							'to_entity' => $target_entity,
+							'entry' => $entry,
+							'confidence' => $confidence,
+							'reason' => isset($suggestion['reason']) ? (string) $suggestion['reason'] : '',
+						];
+					}
+
+					if ($preview_only) {
+						continue;
+					}
+
+					if ($this->move_entry_in_cleaned($cleaned, (string) $section, $entity_name, $entry, $target_section, $target_entity, $entry)) {
+						++$moved;
+					}
+				}
+			}
+		}
+
+		return [
+			'data' => $cleaned,
+			'evaluated' => $evaluated,
+			'moved' => $moved,
+			'proposed' => $proposed,
+			'preview_rows' => $preview_rows,
+		];
 	}
 
 	private function questionable_entry_flags($entry, $settings) {
@@ -3279,7 +4064,7 @@ class PMM_Plugin {
 			return false;
 		}
 
-		$from_key = in_array($from_section, ['Notes', 'Relationships', 'NSFW'], true) || $from_entity === '' ? '__entries__' : $from_entity;
+		$from_key = in_array($from_section, $this->section_level_sections(), true) || $from_entity === '' ? '__entries__' : $from_entity;
 		if (!isset($cleaned[$from_section][$from_key]) || !is_array($cleaned[$from_section][$from_key])) {
 			return false;
 		}
@@ -3309,7 +4094,7 @@ class PMM_Plugin {
 		if (!isset($cleaned[$to_section]) || !is_array($cleaned[$to_section])) {
 			$cleaned[$to_section] = [];
 		}
-		$to_key = in_array($to_section, ['Notes', 'Relationships', 'NSFW'], true) || $to_entity === '' ? '__entries__' : $to_entity;
+		$to_key = in_array($to_section, $this->section_level_sections(), true) || $to_entity === '' ? '__entries__' : $to_entity;
 		if (!isset($cleaned[$to_section][$to_key]) || !is_array($cleaned[$to_section][$to_key])) {
 			$cleaned[$to_section][$to_key] = [];
 		}
@@ -3324,6 +4109,285 @@ class PMM_Plugin {
 
 		$cleaned[$to_section][$to_key][] = $to_entry;
 		return true;
+	}
+
+	private function remove_entry_from_cleaned(&$cleaned, $section, $entity, $entry) {
+		$section = trim((string) $section);
+		$entity = trim((string) $entity);
+		$entry = PMM_Utils::normalize_bullet((string) $entry);
+		if ($section === '' || $entry === '') {
+			return false;
+		}
+
+		if (!isset($cleaned[$section]) || !is_array($cleaned[$section])) {
+			return false;
+		}
+
+		$key = in_array($section, $this->section_level_sections(), true) || $entity === '' ? '__entries__' : $entity;
+		if (!isset($cleaned[$section][$key]) || !is_array($cleaned[$section][$key])) {
+			return false;
+		}
+
+		$target_fp = PMM_Utils::fingerprint($entry);
+		$removed = false;
+		$new_items = [];
+		foreach ((array) $cleaned[$section][$key] as $item) {
+			$item_text = PMM_Utils::normalize_bullet((string) $item);
+			if (!$removed && PMM_Utils::fingerprint($item_text) === $target_fp) {
+				$removed = true;
+				continue;
+			}
+			$new_items[] = $item_text;
+		}
+
+		if (!$removed) {
+			return false;
+		}
+
+		$cleaned[$section][$key] = $new_items;
+		if (empty($new_items) && strpos((string) $key, '__') !== 0) {
+			unset($cleaned[$section][$key]);
+		}
+
+		return true;
+	}
+
+	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null) {
+		$items = array_values(array_filter(array_map(static function($item) {
+			return PMM_Utils::normalize_bullet((string) $item);
+		}, (array) $items), static function($item) {
+			return $item !== '';
+		}));
+
+		if (empty($items)) {
+			return [];
+		}
+
+		$exact_seen = [];
+		$deduped = [];
+		for ($i = count($items) - 1; $i >= 0; $i--) {
+			$entry = $items[$i];
+			$fp = PMM_Utils::fingerprint($entry);
+			if ($fp === '') {
+				continue;
+			}
+
+			if (isset($exact_seen[$fp])) {
+				++$stats['exact_duplicates'];
+				if (is_array($report)) {
+					$report['exact_duplicates'][] = $entry;
+				}
+				continue;
+			}
+
+			$is_near_duplicate = false;
+			foreach ($deduped as $kept) {
+				if ($this->entries_are_similar($entry, $kept, $similarity_threshold)) {
+					$is_near_duplicate = true;
+					break;
+				}
+			}
+
+			if ($is_near_duplicate) {
+				++$stats['near_duplicates'];
+				if (is_array($report)) {
+					$report['near_duplicates'][] = $entry;
+				}
+				continue;
+			}
+
+			$exact_seen[$fp] = true;
+			$deduped[] = $entry;
+		}
+
+		$deduped = array_reverse($deduped);
+
+		if ($remove_stale) {
+			$fresh = [];
+			foreach ($deduped as $entry) {
+				if ($this->is_likely_stale_entry($entry)) {
+					++$stats['stale_removed'];
+					if (is_array($report)) {
+						$report['stale_removed'][] = $entry;
+					}
+					continue;
+				}
+				$fresh[] = $entry;
+			}
+			$deduped = $fresh;
+		}
+
+		if (count($deduped) > $max_keep) {
+			$stats['trimmed'] = count($deduped) - $max_keep;
+			$deduped = $this->select_entries_for_prune_keep($deduped, $max_keep, $stats, $report);
+		}
+
+		return array_values($deduped);
+	}
+
+	private function entries_are_similar($a, $b, $threshold) {
+		$fpA = PMM_Utils::fingerprint((string) $a);
+		$fpB = PMM_Utils::fingerprint((string) $b);
+		if ($fpA === '' || $fpB === '') {
+			return false;
+		}
+
+		$lenA = strlen($fpA);
+		$lenB = strlen($fpB);
+		$maxLen = max($lenA, $lenB);
+		if ($maxLen <= 0) {
+			return false;
+		}
+		if (abs($lenA - $lenB) > max(20, (int) floor($maxLen * 0.45))) {
+			return false;
+		}
+
+		if ($fpA === $fpB) {
+			return true;
+		}
+
+		$jaccard = PMM_Utils::jaccard_similarity($fpA, $fpB);
+		if ($jaccard >= (float) $threshold) {
+			return true;
+		}
+
+		$distance = levenshtein($fpA, $fpB);
+		$ratio = max(0.0, 1.0 - ($distance / $maxLen));
+		return $ratio >= ((float) $threshold + 0.02);
+	}
+
+	private function is_likely_stale_entry($entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return true;
+		}
+
+		$patterns = [
+			'/\b(formerly|used to|no longer|obsolete|deprecated|retired|decommissioned|outdated|old version|previously)\b/i',
+			'/\b(tbd|todo|placeholder|unknown|n\/a|temp)\b/i',
+			'/\b(before the update|pre-reset|prior canon)\b/i',
+		];
+
+		foreach ($patterns as $pattern) {
+			if (preg_match($pattern, $entry) === 1) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private function select_entries_for_prune_keep($entries, $max_keep, &$stats, &$report = null) {
+		$total = count((array) $entries);
+		if ($total <= $max_keep) {
+			return array_values((array) $entries);
+		}
+
+		$scored = [];
+		$critical_count = 0;
+		foreach (array_values((array) $entries) as $idx => $entry) {
+			$entry = PMM_Utils::normalize_bullet((string) $entry);
+			if ($entry === '') {
+				continue;
+			}
+
+			$score_data = $this->entry_prune_importance_score($entry, $idx, $total);
+			if ($score_data['critical']) {
+				++$critical_count;
+			}
+			$scored[] = [
+				'index' => $idx,
+				'entry' => $entry,
+				'score' => $score_data['score'],
+				'critical' => $score_data['critical'],
+			];
+		}
+
+		usort($scored, static function($a, $b) {
+			if ((float) $a['score'] === (float) $b['score']) {
+				return ((int) $a['index'] > (int) $b['index']) ? -1 : 1;
+			}
+			return ((float) $a['score'] > (float) $b['score']) ? -1 : 1;
+		});
+
+		$selected = array_slice($scored, 0, $max_keep);
+		$selected_indexes = [];
+		$critical_kept = 0;
+		foreach ($selected as $row) {
+			$selected_indexes[(int) $row['index']] = true;
+			if (!empty($row['critical'])) {
+				++$critical_kept;
+			}
+		}
+
+		$stats['critical_preserved'] = $critical_count > 0 ? $critical_kept : 0;
+
+		$kept = [];
+		foreach (array_values((array) $entries) as $idx => $entry) {
+			$entry = PMM_Utils::normalize_bullet((string) $entry);
+			if ($entry === '') {
+				continue;
+			}
+			if (!isset($selected_indexes[$idx])) {
+				if (is_array($report)) {
+					$report['trimmed'][] = $entry;
+				}
+				continue;
+			}
+			$kept[] = $entry;
+		}
+
+		return $kept;
+	}
+
+	private function entry_prune_importance_score($entry, $index, $total) {
+		$entry = trim((string) $entry);
+		$score = 0.0;
+		$critical = false;
+
+		$critical_patterns = [
+			'/\b(name|alias|identity|role|occupation|objective|goal|motivation|personality|trait|relationship|family|ally|enemy|ability|skill|power|weakness|limitation|status|condition|location|residence|inventory|equipment|history|backstory|canon|current|now)\b/i',
+			'/\b(age|birthday|pronouns?|title|rank|faction|affiliation)\b/i',
+		];
+		foreach ($critical_patterns as $pattern) {
+			if (preg_match($pattern, $entry) === 1) {
+				$score += 6.0;
+				$critical = true;
+				break;
+			}
+		}
+
+		$word_count = str_word_count($entry);
+		if ($word_count >= 10) {
+			$score += 1.5;
+		}
+		if ($word_count >= 18) {
+			$score += 1.5;
+		}
+		if ($word_count >= 28) {
+			$score += 1.0;
+		}
+
+		if (preg_match('/\b\d{2,4}\b/', $entry) === 1) {
+			$score += 0.8;
+		}
+
+		if (preg_match('/\b(maybe|possibly|perhaps|unsure|unknown|rumor|rumour|speculation)\b/i', $entry) === 1) {
+			$score -= 1.5;
+		}
+
+		if ($this->is_likely_stale_entry($entry)) {
+			$score -= 5.0;
+		}
+
+		if ($total > 1) {
+			$score += ((float) $index / (float) ($total - 1)) * 1.8;
+		}
+
+		return [
+			'score' => $score,
+			'critical' => $critical,
+		];
 	}
 
 	private function build_entry_rule_key($section, $entity, $entry) {
@@ -3515,7 +4579,19 @@ class PMM_Plugin {
 		return ($score_a >= $score_b) ? (string) $a : (string) $b;
 	}
 
-	private function start_reprocess_from_last_output() {
+	private function valid_sections() {
+		return ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
+	}
+
+	private function entity_sections() {
+		return ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
+	}
+
+	private function section_level_sections() {
+		return ['Notes', 'Relationships', 'NSFW', 'World Building'];
+	}
+
+	private function start_reprocess_from_last_output($rescan_sections = null, $rescan_confidence = null, $rescan_preview_only = null) {
 		$data = $this->get_last_output_data_for_editing();
 		if (empty($data['content'])) {
 			return false;
@@ -3532,6 +4608,18 @@ class PMM_Plugin {
 		}
 
 		$include_entity_report = get_option('pmm_include_entity_report', '0') === '1';
+		if ($rescan_sections === null) {
+			$rescan_sections = ((int) get_option('pmm_rescan_sections', 0)) === 1;
+		}
+		if ($rescan_confidence === null) {
+			$rescan_confidence = (int) get_option('pmm_rescan_confidence', 84);
+		}
+		if ($rescan_preview_only === null) {
+			$rescan_preview_only = ((int) get_option('pmm_rescan_preview_only', 0)) === 1;
+		}
+		update_option('pmm_rescan_sections', !empty($rescan_sections) ? 1 : 0, false);
+		update_option('pmm_rescan_confidence', max(70, min(98, (int) $rescan_confidence)), false);
+		update_option('pmm_rescan_preview_only', !empty($rescan_preview_only) ? 1 : 0, false);
 
 		$job_id = $this->generate_job_id();
 		$source_path = $this->build_job_source_path($job_id, 'txt');
@@ -3554,6 +4642,9 @@ class PMM_Plugin {
 			'format' => $format,
 			'drop_sequences' => $drop_sequences,
 			'include_entity_report' => $include_entity_report,
+			'rescan_sections' => !empty($rescan_sections),
+			'rescan_confidence' => max(70, min(98, (int) $rescan_confidence)),
+			'rescan_preview_only' => !empty($rescan_preview_only),
 			'entity_report' => [
 				'entities' => [],
 				'new_entities' => [],
