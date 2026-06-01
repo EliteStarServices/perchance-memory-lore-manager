@@ -95,7 +95,8 @@ class PMM_Admin {
 		if (!in_array($entity_related_match_mode, ['normal', 'strict'], true)) {
 			$entity_related_match_mode = 'normal';
 		}
-		$rescan_sections_enabled = ((int) get_option('pmm_rescan_sections', 0)) === 1;
+		// Keep recategorization scan opt-in per run; do not keep it sticky between page loads.
+		$rescan_sections_enabled = false;
 		$rescan_confidence = max(70, min(98, (int) get_option('pmm_rescan_confidence', 84)));
 		$rescan_preview_only = ((int) get_option('pmm_rescan_preview_only', 0)) === 1;
 		$similarity_threshold_defaults = [
@@ -356,7 +357,7 @@ class PMM_Admin {
 			</div>
 
 			<div class="notice notice-info">
-				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('To force loose/raw lines into intake, add a section header "# Raw Import" (or "# New Entries") in your source file. Auto detection will handle mixed input in one pass: bullets, one-entry-per-line dumps, and multi-line paragraph descriptions are all treated as New Entries during processing.', 'perchance-memory-manager'); ?></p>
+				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('To force loose/raw lines into intake, add a section header "# Raw Import" (or "# New Entries") in your source file. Raw import understands bullet-delimited entries and blank-line-delimited wrapped entries, which matches common Perchance memory formats.', 'perchance-memory-manager'); ?></p>
 			</div>
 
 			<?php if ($latest_version_public_url !== '') : ?>
@@ -409,12 +410,10 @@ class PMM_Admin {
 						<strong><?php esc_html_e('Reprocess recommended:', 'perchance-memory-manager'); ?></strong>
 						<?php esc_html_e('output-affecting rules or staging changed and are not fully reflected in the latest output yet.', 'perchance-memory-manager'); ?>
 					</p>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0 0 8px 0;">
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="pmm-process-settings-form" style="margin:0 0 8px 0;">
 						<?php wp_nonce_field('pmm_reprocess_last_output'); ?>
 						<input type="hidden" name="action" value="pmm_reprocess_last_output">
-						<label style="display:block;margin:0 0 6px 0;"><input type="checkbox" name="pmm_rescan_sections" value="1" <?php checked($rescan_sections_enabled); ?>> <?php esc_html_e('Rescan existing entries for section recategorization during reprocess', 'perchance-memory-manager'); ?></label>
-						<label style="display:block;margin:0 0 6px 0;"><?php esc_html_e('Minimum confidence', 'perchance-memory-manager'); ?> <input type="range" name="pmm_rescan_confidence" min="70" max="98" step="1" value="<?php echo esc_attr((string) $rescan_confidence); ?>" style="width:180px;vertical-align:middle;"></label>
-						<label style="display:block;margin:0 0 6px 0;"><input type="checkbox" name="pmm_rescan_preview_only" value="1" <?php checked($rescan_preview_only); ?>> <?php esc_html_e('Dry run preview only (do not move entries)', 'perchance-memory-manager'); ?></label>
+						<p class="description" style="margin:0 0 8px 0;"><?php esc_html_e('This uses the current settings from the main Upload and Process table, including recategorization scan options.', 'perchance-memory-manager'); ?></p>
 						<?php submit_button(__('Reprocess Last Output Now', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
 					</form>
 				</div>
@@ -543,7 +542,7 @@ class PMM_Admin {
 				<h2><?php esc_html_e('Upload and Process', 'perchance-memory-manager'); ?></h2>
 				<?php if ($latest_version_file !== '') : ?>
 					<p class="description"><?php echo esc_html(sprintf(__('Latest version file: %1$s%2$s', 'perchance-memory-manager'), $latest_version_file, $latest_version_saved_at > 0 ? ' (' . wp_date('Y-m-d H:i', $latest_version_saved_at) . ')' : '')); ?></p>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="pmm-process-saved-version-form" style="margin-bottom:12px;">
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="pmm-process-settings-form" style="margin-bottom:12px;">
 						<?php wp_nonce_field('pmm_process_latest_version'); ?>
 						<input type="hidden" name="action" value="pmm_process_latest_version">
 						<?php submit_button(__('Process Latest Saved Version File', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
@@ -560,7 +559,7 @@ class PMM_Admin {
 									if ($vf === '') { continue; }
 									?>
 									<li style="margin-bottom:6px;">
-										<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="pmm-process-saved-version-form" style="display:inline;">
+										<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="pmm-process-settings-form" style="display:inline;">
 											<?php wp_nonce_field('pmm_process_recent_version'); ?>
 											<input type="hidden" name="action" value="pmm_process_recent_version">
 											<input type="hidden" name="pmm_version_index" value="<?php echo esc_attr((string) $idx); ?>">
@@ -752,7 +751,7 @@ class PMM_Admin {
 						questionableTerms: document.getElementById('pmm_questionable_terms')
 					};
 
-					var forms = document.querySelectorAll('form.pmm-process-saved-version-form');
+					var forms = document.querySelectorAll('form.pmm-process-settings-form');
 					if (!forms.length) {
 						return;
 					}
@@ -1414,12 +1413,12 @@ class PMM_Admin {
 
 			<div class="pmm-card">
 				<h2><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></h2>
-				<p><?php esc_html_e('Paste mixed raw import text or upload a raw text file to preview how auto-detection splits entries. Then edit tab-separated staging rows (or upload edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
+				<p><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
 				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
 					<?php wp_nonce_field('pmm_preview_raw_import'); ?>
 					<input type="hidden" name="action" value="pmm_preview_raw_import">
 					<p><input type="file" name="pmm_raw_import_file" accept=".txt,.md,.log,.tsv"></p>
-					<textarea name="pmm_raw_import_text" rows="8" class="large-text code" placeholder="# Raw Import&#10;Character is a former pilot with a fractured memory...&#10;Another line from a one-entry-per-line dump"><?php echo esc_textarea($raw_preview_text); ?></textarea>
+					<textarea name="pmm_raw_import_text" rows="12" class="large-text code" placeholder="# Raw Import&#10;Character is a former pilot with a fractured memory...&#10;Another line from a one-entry-per-line dump"><?php echo esc_textarea($raw_preview_text); ?></textarea>
 					<?php submit_button(__('Preview Raw Import', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
 				</form>
 
@@ -2039,12 +2038,10 @@ class PMM_Admin {
 		echo '<li><strong>' . esc_html__('Format:', 'perchance-memory-manager') . '</strong> ' . esc_html((string) ($data['stats']['format'] ?? '')) . '</li>';
 		echo '</ul>';
 
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-bottom:10px;">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="pmm-process-settings-form" style="margin-bottom:10px;">';
 		wp_nonce_field('pmm_reprocess_last_output');
 		echo '<input type="hidden" name="action" value="pmm_reprocess_last_output">';
-		echo '<label style="display:block;margin:0 0 6px 0;"><input type="checkbox" name="pmm_rescan_sections" value="1" ' . checked($rescan_sections_enabled, true, false) . '> ' . esc_html__('Rescan existing entries for section recategorization during reprocess', 'perchance-memory-manager') . '</label>';
-		echo '<label style="display:block;margin:0 0 6px 0;">' . esc_html__('Minimum confidence', 'perchance-memory-manager') . ' <input type="range" name="pmm_rescan_confidence" min="70" max="98" step="1" value="' . esc_attr((string) $rescan_confidence) . '" style="width:220px;vertical-align:middle;"></label>';
-		echo '<label style="display:block;margin:0 0 6px 0;"><input type="checkbox" name="pmm_rescan_preview_only" value="1" ' . checked($rescan_preview_only, true, false) . '> ' . esc_html__('Dry run preview only (do not move entries)', 'perchance-memory-manager') . '</label>';
+		echo '<p class="description" style="margin:0 0 8px 0;">' . esc_html__('This uses the current settings from the main Upload and Process table, including recategorization scan options.', 'perchance-memory-manager') . '</p>';
 		submit_button(__('Reprocess Last Output (No Re-upload)', 'perchance-memory-manager'), 'secondary', 'submit', false);
 		echo '</form>';
 

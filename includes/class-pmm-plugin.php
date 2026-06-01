@@ -145,7 +145,6 @@ class PMM_Plugin {
 		update_option('pmm_global_entity_report_settings', $global_entity_report_settings, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
-		update_option('pmm_rescan_sections', $rescan_sections, false);
 		update_option('pmm_rescan_confidence', $rescan_confidence, false);
 		update_option('pmm_rescan_preview_only', $rescan_preview_only, false);
 		update_option('pmm_last_mode', $mode, false);
@@ -307,7 +306,7 @@ class PMM_Plugin {
 		}
 
 		$include_entity_report = true;
-		$rescan_sections = isset($_POST['pmm_rescan_sections']) ? (!empty($_POST['pmm_rescan_sections']) ? 1 : 0) : ((int) get_option('pmm_rescan_sections', 0));
+		$rescan_sections = isset($_POST['pmm_rescan_sections']) ? (!empty($_POST['pmm_rescan_sections']) ? 1 : 0) : 0;
 		$rescan_confidence = isset($_POST['pmm_rescan_confidence']) ? max(70, min(98, (int) wp_unslash((string) $_POST['pmm_rescan_confidence']))) : ((int) get_option('pmm_rescan_confidence', 84));
 		$rescan_preview_only = isset($_POST['pmm_rescan_preview_only']) ? (!empty($_POST['pmm_rescan_preview_only']) ? 1 : 0) : ((int) get_option('pmm_rescan_preview_only', 0));
 		$similarity_thresholds = $this->read_similarity_thresholds_from_request(isset($_POST) ? $_POST : null);
@@ -329,7 +328,6 @@ class PMM_Plugin {
 		update_option('pmm_global_entity_report_settings', $global_entity_report_settings, false);
 		update_option('pmm_questionable_settings', $questionable_settings, false);
 		update_option('pmm_entity_related_match_mode', $entity_related_match_mode, false);
-		update_option('pmm_rescan_sections', $rescan_sections, false);
 		update_option('pmm_rescan_confidence', $rescan_confidence, false);
 		update_option('pmm_rescan_preview_only', $rescan_preview_only, false);
 
@@ -1849,7 +1847,7 @@ class PMM_Plugin {
 
 		check_admin_referer('pmm_reprocess_last_output');
 
-		$rescan_sections = isset($_POST['pmm_rescan_sections']) ? !empty($_POST['pmm_rescan_sections']) : null;
+		$rescan_sections = isset($_POST['pmm_rescan_sections']) ? !empty($_POST['pmm_rescan_sections']) : false;
 		$rescan_confidence = isset($_POST['pmm_rescan_confidence']) ? max(70, min(98, (int) wp_unslash((string) $_POST['pmm_rescan_confidence']))) : null;
 		$rescan_preview_only = isset($_POST['pmm_rescan_preview_only']) ? !empty($_POST['pmm_rescan_preview_only']) : null;
 		if (!$this->start_reprocess_from_last_output($rescan_sections, $rescan_confidence, $rescan_preview_only)) {
@@ -2832,6 +2830,13 @@ class PMM_Plugin {
 	}
 
 	private function apply_staged_raw_import_rows($parsed, $rows) {
+		$valid_sections = $this->valid_sections();
+		$section_level_sections = $this->section_level_sections();
+		$alias_rules = get_option('pmm_alias_rules', []);
+		if (!is_array($alias_rules)) {
+			$alias_rules = [];
+		}
+
 		foreach ((array) $rows as $row) {
 			$section = isset($row['section']) ? trim((string) $row['section']) : 'Notes';
 			$entity = isset($row['entity']) ? trim((string) $row['entity']) : '';
@@ -2840,11 +2845,15 @@ class PMM_Plugin {
 				continue;
 			}
 
-			if (!isset($parsed[$section])) {
+			if (!in_array($section, $valid_sections, true) || !isset($parsed[$section])) {
 				$section = 'Notes';
 			}
 
-			if ($section === 'Notes' || $section === 'Relationships' || $section === 'NSFW' || $entity === '') {
+			if ($entity !== '') {
+				$entity = $this->resolve_alias_name($entity, $alias_rules);
+			}
+
+			if (in_array($section, $section_level_sections, true) || $entity === '') {
 				if (!isset($parsed[$section]['__entries__']) || !is_array($parsed[$section]['__entries__'])) {
 					$parsed[$section]['__entries__'] = [];
 				}
@@ -4609,7 +4618,7 @@ class PMM_Plugin {
 
 		$include_entity_report = get_option('pmm_include_entity_report', '0') === '1';
 		if ($rescan_sections === null) {
-			$rescan_sections = ((int) get_option('pmm_rescan_sections', 0)) === 1;
+			$rescan_sections = false;
 		}
 		if ($rescan_confidence === null) {
 			$rescan_confidence = (int) get_option('pmm_rescan_confidence', 84);
@@ -4617,7 +4626,6 @@ class PMM_Plugin {
 		if ($rescan_preview_only === null) {
 			$rescan_preview_only = ((int) get_option('pmm_rescan_preview_only', 0)) === 1;
 		}
-		update_option('pmm_rescan_sections', !empty($rescan_sections) ? 1 : 0, false);
 		update_option('pmm_rescan_confidence', max(70, min(98, (int) $rescan_confidence)), false);
 		update_option('pmm_rescan_preview_only', !empty($rescan_preview_only) ? 1 : 0, false);
 

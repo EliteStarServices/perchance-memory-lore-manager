@@ -127,12 +127,8 @@ class PMM_Parser {
 			if ($current_section === 'New Entries') {
 				if ($this->is_bullet($line)) {
 					$this->flush_pending_raw_entry($data, $pending_raw_entry);
-					$data[$current_section]['__entries__'][] = $this->strip_bullet_prefix($line);
+					$pending_raw_entry[] = $this->strip_bullet_prefix($line);
 					continue;
-				}
-
-				if ($this->should_start_new_raw_entry($pending_raw_entry, $line)) {
-					$this->flush_pending_raw_entry($data, $pending_raw_entry);
 				}
 
 				$pending_raw_entry[] = $line;
@@ -286,8 +282,11 @@ class PMM_Parser {
 			if (!$assigned) {
 				$guess = $this->guess_new_entry_target($entry);
 
-				if ($guess['section'] === 'Notes') {
-					$data['Notes']['__entries__'][] = $entry;
+				if (in_array($guess['section'], $this->section_level_sections(), true) || empty($guess['entity'])) {
+					if (!isset($data[$guess['section']]['__entries__']) || !is_array($data[$guess['section']]['__entries__'])) {
+						$data[$guess['section']]['__entries__'] = [];
+					}
+					$data[$guess['section']]['__entries__'][] = $guess['bullet'];
 				} else {
 					$data[$guess['section']] = $this->ensure_entity_array($data[$guess['section']], $guess['entity']);
 					$data[$guess['section']][$guess['entity']][] = $guess['bullet'];
@@ -365,18 +364,18 @@ class PMM_Parser {
 			];
 		}
 
-		$name = $this->extract_leading_name($entry);
-		if ($name) {
+		$character_name = $this->extract_character_anchor_name($entry);
+		if ($character_name !== null) {
 			return [
 				'section' => 'Characters',
-				'entity' => $name,
-				'bullet' => $this->strip_entity_prefix($entry, $name),
+				'entity' => $character_name,
+				'bullet' => $this->strip_entity_prefix($entry, $character_name),
 			];
 		}
 
 		return [
-			'section' => 'Characters',
-			'entity' => 'Unsorted Inbox',
+			'section' => 'Notes',
+			'entity' => null,
 			'bullet' => $entry,
 		];
 	}
@@ -549,6 +548,56 @@ class PMM_Parser {
 		return null;
 	}
 
+	private function extract_character_anchor_name($entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return null;
+		}
+
+		if ($this->entry_has_multiple_named_subjects($entry)) {
+			return null;
+		}
+
+		if (preg_match('/^([A-Z][A-Za-z0-9_\-\'\.]{1,30}(?:\s+[A-Z][A-Za-z0-9_\-\'\.]{1,30}){0,2})\s*(?:[:\-]\s+|\s+(?:is|was|has|had|works|worked|served|joined|joins|met|meets|likes|wants|needs|fears|plans)\b)/u', $entry, $m)) {
+			$name = trim((string) $m[1]);
+			if ($name !== '' && !$this->looks_like_non_character_name($name)) {
+				return $name;
+			}
+		}
+
+		$name = $this->extract_leading_name($entry);
+		if ($name === null || $name === '' || $this->looks_like_non_character_name($name)) {
+			return null;
+		}
+
+		if (preg_match('/\b(he|she|they|him|her|his|hers|their|theirs)\b/i', $entry) === 1) {
+			return $name;
+		}
+
+		if (preg_match('/\b(is|was|has|had|works|worked|serves|served|joined|joins|met|meets|likes|wants|needs|fears|plans)\b/i', $entry) === 1) {
+			return $name;
+		}
+
+		return null;
+	}
+
+	private function looks_like_non_character_name($name) {
+		if (!is_string($name)) {
+			return true;
+		}
+
+		$name = trim($name);
+		if ($name === '') {
+			return true;
+		}
+
+		if (preg_match('/\b(Tech|Technologies|Industries|Division|Labs|Holdings|University|Company|Corp|Corporation|Agency|Council|Syndicate|Guild|Institute|Foundation|Committee|Department|Bureau|Office|Consortium|Group|Team|Unit|Station|Base|District|City|Town|Village|Facility|System|Protocol|Engine|Network|Platform|Vehicle|Transport)\b/ui', $name) === 1) {
+			return true;
+		}
+
+		return false;
+	}
+
 	private function strip_entity_prefix($entry, $entity) {
 		if (empty($entity)) {
 			return $entry;
@@ -589,7 +638,160 @@ class PMM_Parser {
 			return false;
 		}
 
-		return $this->looks_like_sentence_boundary($previous);
+		if ($this->previous_raw_line_requires_continuation($previous)) {
+			return false;
+		}
+
+		// New Entries is now line-first: if a line is not an obvious continuation,
+		// treat it as a new entry. This aligns with Perchance one-entry-per-line data.
+		return true;
+	}
+
+	private function previous_raw_line_requires_continuation($line) {
+		$line = rtrim((string) $line);
+		if ($line === '') {
+			return false;
+		}
+
+		if (preg_match('/[,;:\/\-]\s*$/u', $line) === 1) {
+			return true;
+		}
+
+		if (preg_match('/[\(\[\{"\']\s*$/u', $line) === 1) {
+			return true;
+		}
+
+		if (preg_match('/\b(and|or|but|because|with|including|such\s+as|for\s+example|e\.g)\s*$/iu', $line) === 1) {
+			return true;
+		}
+
+		return false;
+	}
+
+	private function looks_like_new_raw_statement($line) {
+		$line = trim((string) $line);
+		if ($line === '') {
+			return false;
+		}
+
+		if (preg_match('/^(?:[-*•]\s+)/u', $line) === 1) {
+			return true;
+		}
+
+		if (preg_match('/^(?:[A-Z0-9"\'\(])/u', $line) === 1) {
+			return true;
+		}
+
+		return false;
+	}
+
+	private function split_raw_entry_candidates($entry) {
+		$entry = trim((string) preg_replace('/\s+/u', ' ', (string) $entry));
+		if ($entry === '') {
+			return [];
+		}
+
+		if (mb_strlen($entry) < 260) {
+			return [$entry];
+		}
+
+		$sentences = $this->split_into_sentences($entry);
+		if (count($sentences) <= 1) {
+			return [$entry];
+		}
+
+		$chunks = [];
+		$buffer = '';
+
+		foreach ($sentences as $sentence) {
+			$sentence = trim((string) $sentence);
+			if ($sentence === '') {
+				continue;
+			}
+
+			if ($buffer === '') {
+				$buffer = $sentence;
+				continue;
+			}
+
+			$next_length = mb_strlen($buffer) + 1 + mb_strlen($sentence);
+			if ($next_length > 260 || $this->is_likely_new_subject_sentence($sentence)) {
+				$chunks[] = $buffer;
+				$buffer = $sentence;
+				continue;
+			}
+
+			$buffer .= ' ' . $sentence;
+		}
+
+		if ($buffer !== '') {
+			$chunks[] = $buffer;
+		}
+
+		$out = [];
+		foreach ($chunks as $chunk) {
+			$chunk = trim((string) $chunk);
+			if ($chunk === '') {
+				continue;
+			}
+			if (!empty($out) && mb_strlen($chunk) < 56) {
+				$out[count($out) - 1] .= ' ' . $chunk;
+				continue;
+			}
+			$out[] = $chunk;
+		}
+
+		if (empty($out)) {
+			return [$entry];
+		}
+
+		return $out;
+	}
+
+	private function split_into_sentences($text) {
+		$text = trim((string) $text);
+		if ($text === '') {
+			return [];
+		}
+
+		$parts = preg_split('/(?<=[.!?])\s+(?=[A-Z0-9"\'])/u', $text);
+		if (!is_array($parts) || count($parts) <= 1) {
+			return [$text];
+		}
+
+		$sentences = [];
+		foreach ($parts as $part) {
+			$part = trim((string) $part);
+			if ($part === '') {
+				continue;
+			}
+
+			if (!empty($sentences) && $this->ends_with_non_terminal_abbreviation($sentences[count($sentences) - 1])) {
+				$sentences[count($sentences) - 1] .= ' ' . $part;
+				continue;
+			}
+
+			$sentences[] = $part;
+		}
+
+		return !empty($sentences) ? $sentences : [$text];
+	}
+
+	private function is_likely_new_subject_sentence($sentence) {
+		$sentence = trim((string) $sentence);
+		if ($sentence === '') {
+			return false;
+		}
+
+		if (preg_match('/^[A-Z][A-Za-z0-9_\-' . "'" . ']{1,40}(?:\s+[A-Z][A-Za-z0-9_\-' . "'" . ']{1,40}){0,2}\s+(?:is|was|has|had|works|worked|served|joined|joins|leads|commands|pilots|built|created|founded|owns|operates|maintains|reports)\b/u', $sentence) === 1) {
+			return true;
+		}
+
+		if (preg_match('/^(Meanwhile|Separately|Later|Afterward|In contrast|However|Additionally|Also),?\b/u', $sentence) === 1) {
+			return true;
+		}
+
+		return false;
 	}
 
 	private function looks_like_sentence_boundary($text) {
@@ -810,6 +1012,7 @@ class PMM_Parser {
 			'section' => null,
 			'entity' => null,
 		];
+		$strong_matches = 0;
 
 		foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'] as $section) {
 			if (empty($data[$section]) || !is_array($data[$section])) {
@@ -822,9 +1025,16 @@ class PMM_Parser {
 				}
 
 				$name_score = PMM_Utils::contains_name_score($entry, $entity);
-				if ($name_score > $best['score']) {
+				$explicit = $this->entry_mentions_entity_name($entry, (string) $entity);
+				$effective_score = $explicit ? $name_score : ($name_score * 0.82);
+
+				if ($explicit && $name_score >= 0.60) {
+					$strong_matches++;
+				}
+
+				if ($effective_score > $best['score']) {
 					$best = [
-						'score' => $name_score,
+						'score' => $effective_score,
 						'section' => $section,
 						'entity' => $entity,
 					];
@@ -832,7 +1042,12 @@ class PMM_Parser {
 			}
 		}
 
-		if ($best['section'] === null || $best['score'] < 0.50) {
+		$minimum_score = $this->entry_has_multiple_named_subjects($entry) ? 0.84 : 0.72;
+		if ($best['section'] === null || $best['score'] < $minimum_score) {
+			return null;
+		}
+
+		if ($strong_matches > 1 && $best['score'] < 0.90) {
 			return null;
 		}
 
@@ -841,6 +1056,75 @@ class PMM_Parser {
 			'entity' => $best['entity'],
 			'bullet' => $this->strip_entity_prefix($entry, $best['entity']),
 		];
+	}
+
+	private function entry_mentions_entity_name($entry, $entity) {
+		$entry = trim((string) $entry);
+		$entity = trim((string) $entity);
+		if ($entry === '' || $entity === '') {
+			return false;
+		}
+
+		$name_fp = PMM_Utils::name_fingerprint($entity);
+		if ($name_fp === '') {
+			return false;
+		}
+
+		$tokens = array_values(array_filter(preg_split('/\s+/u', $name_fp), static function ($token) {
+			return is_string($token) && $token !== '';
+		}));
+
+		if (empty($tokens)) {
+			return false;
+		}
+
+		if (count($tokens) === 1 && mb_strlen($tokens[0]) < 4) {
+			return false;
+		}
+
+		$escaped = array_map(static function ($token) {
+			return preg_quote($token, '/');
+		}, $tokens);
+		$pattern = '/\b' . implode('\s+', $escaped) . '\b/ui';
+
+		return preg_match($pattern, $entry) === 1;
+	}
+
+	private function entry_has_multiple_named_subjects($entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return false;
+		}
+
+		preg_match_all('/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/u', $entry, $m);
+		if (empty($m[1]) || !is_array($m[1])) {
+			return false;
+		}
+
+		$ignore = [
+			'The' => true,
+			'A' => true,
+			'An' => true,
+			'In' => true,
+			'On' => true,
+			'At' => true,
+			'Of' => true,
+			'And' => true,
+			'But' => true,
+			'However' => true,
+			'Meanwhile' => true,
+		];
+
+		$subjects = [];
+		foreach ($m[1] as $candidate) {
+			$candidate = trim((string) $candidate);
+			if ($candidate === '' || isset($ignore[$candidate])) {
+				continue;
+			}
+			$subjects[$candidate] = true;
+		}
+
+		return count($subjects) >= 3;
 	}
 
 	private function suggest_new_entry_target($data, $entry) {
@@ -910,12 +1194,23 @@ class PMM_Parser {
 		$out = [];
 
 		foreach ($lines as $line) {
+			if (trim((string) $line) === '') {
+				$out[] = '';
+				continue;
+			}
+
 			$parts = preg_split('/(?=\s*#\s*(?:Characters|Organizations|Locations|Technology\s*\/\s*Systems|Vehicles\s*\/\s*Transportation|World\s*Building|Relationships|NSFW|Notes|New Entries|Raw Import)\b)/iu', (string) $line);
+			$added = false;
 			foreach ($parts as $part) {
 				$trimmed = trim($part);
 				if ($trimmed !== '') {
 					$out[] = $trimmed;
+					$added = true;
 				}
+			}
+
+			if (!$added) {
+				$out[] = '';
 			}
 		}
 
