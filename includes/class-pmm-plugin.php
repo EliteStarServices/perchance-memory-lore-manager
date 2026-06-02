@@ -719,7 +719,10 @@ class PMM_Plugin {
 
 		$text = isset($_POST['pmm_alias_rules_text']) ? wp_unslash($_POST['pmm_alias_rules_text']) : '';
 		$rules = $this->parse_alias_rules_text($text);
+		$exclusions_text = isset($_POST['pmm_first_name_alias_exclusions_text']) ? wp_unslash($_POST['pmm_first_name_alias_exclusions_text']) : '';
+		$first_name_exclusions = $this->sanitize_drop_sequences($exclusions_text);
 		update_option('pmm_alias_rules', $rules, false);
+		update_option('pmm_first_name_alias_exclusions', $first_name_exclusions, false);
 		$this->mark_output_rules_dirty();
 
 		wp_safe_redirect(add_query_arg([

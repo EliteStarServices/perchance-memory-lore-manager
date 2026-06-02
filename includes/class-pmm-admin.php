@@ -390,13 +390,33 @@ class PMM_Admin {
 			sort($preview_sections, SORT_NATURAL | SORT_FLAG_CASE);
 			$preview_entities = array_keys($preview_entities);
 			sort($preview_entities, SORT_NATURAL | SORT_FLAG_CASE);
+			$known_entities_by_section = $this->known_entities_for_raw_review($confirmed_registry, (array) $data['cleaned_data']);
 			$all_sections_for_report = ['New Entries', 'Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
 			$entry_convert_section_options = [];
 			foreach ($all_sections_for_report as $sec) {
-				$global_entity_section_options[$sec] = $this->entity_options_for_section((array) $data['cleaned_data'], $sec);
+				$section_entities = $this->entity_options_for_section((array) $data['cleaned_data'], $sec);
+				if (isset($known_entities_by_section[$sec]) && is_array($known_entities_by_section[$sec])) {
+					$section_entities = array_values(array_unique(array_merge($section_entities, $known_entities_by_section[$sec])));
+					sort($section_entities, SORT_NATURAL | SORT_FLAG_CASE);
+				}
+				$global_entity_section_options[$sec] = $section_entities;
 				$entry_convert_section_options[$sec] = $sec;
 			}
 			$entry_convert_section_options['all'] = __('All Sections', 'perchance-memory-manager');
+
+			if (!empty($known_entities_by_section)) {
+				$all_known = [];
+				foreach ($known_entities_by_section as $known_list) {
+					if (!is_array($known_list)) {
+						continue;
+					}
+					$all_known = array_merge($all_known, $known_list);
+				}
+				if (!empty($all_known)) {
+					$preview_entities = array_values(array_unique(array_merge($preview_entities, $all_known)));
+					sort($preview_entities, SORT_NATURAL | SORT_FLAG_CASE);
+				}
+			}
 
 			if (!isset($entry_convert_section_options[$entry_convert_section])) {
 				$entry_convert_section = 'all';
@@ -903,6 +923,128 @@ class PMM_Admin {
 					}
 				});
 				</script>
+			</div>
+
+			<div class="pmm-card">
+				<details class="pmm-collapsible-section pmm-collapsible-root">
+					<summary><strong><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></strong></summary>
+				<div>
+				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('When importing raw text, add a section header "# Raw Import" (or "# New Entries") in your source file. Raw import understands bullet-delimited entries and blank-line-delimited wrapped entries, which matches common Perchance memory formats.', 'perchance-memory-manager'); ?>
+				<br><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload the edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
+			    </div>
+				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
+					<?php wp_nonce_field('pmm_preview_raw_import'); ?>
+					<input type="hidden" name="action" value="pmm_preview_raw_import">
+					<p><input type="file" name="pmm_raw_import_file" accept=".txt,.md,.log,.tsv"></p>
+					<textarea name="pmm_raw_import_text" rows="12" class="large-text code" placeholder="# Raw Import&#10;Character is a former pilot with a fractured memory...&#10;Another line from a one-entry-per-line dump"><?php echo esc_textarea($raw_preview_text); ?></textarea>
+					<?php submit_button(__('Preview Raw Import', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+				</form>
+
+				<?php if (!empty($raw_preview_rows) || !empty($staged_raw_rows)) : ?>
+					<?php if (!empty($raw_preview_rows)) : ?>
+						<p class="description" style="margin-top:10px;">
+							<?php echo esc_html(sprintf(__('Preview confidence mix: %1$d high (>=85), %2$d medium (60-84), %3$d low (<60). Use confidence staging to avoid reviewing every row manually.', 'perchance-memory-manager'), $raw_preview_high_conf, $raw_preview_medium_conf, $raw_preview_low_conf)); ?>
+						</p>
+						<?php if ($raw_stage_mode_notice !== '') : ?>
+							<p class="description" style="margin-top:6px;"><strong><?php esc_html_e('Last confidence staging mode:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html(str_replace('_', ' ', $raw_stage_mode_notice)); ?> (<?php echo esc_html((string) $raw_confidence_threshold); ?>)</p>
+						<?php endif; ?>
+					<?php endif; ?>
+					<p class="description" style="margin-top:10px;"><?php esc_html_e('Editable staging format: Section<TAB>Entity<TAB>Entry text. Leave Entity blank to append to section-level entries like Notes/Relationships/NSFW.', 'perchance-memory-manager'); ?></p>
+					<?php if (!empty($raw_preview_rows)) : ?>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+							<?php wp_nonce_field('pmm_stage_raw_import'); ?>
+							<input type="hidden" name="action" value="pmm_stage_raw_import">
+							<label>
+								<?php esc_html_e('Confidence threshold', 'perchance-memory-manager'); ?><br>
+								<input type="number" name="pmm_raw_confidence_threshold" min="1" max="99" value="<?php echo esc_attr((string) $raw_confidence_threshold); ?>" style="width:100px;">
+							</label>
+							<label>
+								<?php esc_html_e('Bulk stage mode', 'perchance-memory-manager'); ?><br>
+								<select name="pmm_raw_stage_mode">
+									<option value="all_preview_rows"><?php esc_html_e('Stage all preview rows', 'perchance-memory-manager'); ?></option>
+									<option value="high_confidence_only"><?php esc_html_e('Stage high-confidence rows only (>= threshold)', 'perchance-memory-manager'); ?></option>
+									<option value="low_confidence_only"><?php esc_html_e('Stage low-confidence review queue only (< threshold)', 'perchance-memory-manager'); ?></option>
+								</select>
+							</label>
+							<?php submit_button(__('Stage From Preview Confidence Filter', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+						</form>
+					<?php endif; ?>
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data" id="pmm-raw-stage-form" data-pmm-raw-table-complete="1">
+						<?php wp_nonce_field('pmm_stage_raw_import'); ?>
+						<input type="hidden" name="action" value="pmm_stage_raw_import">
+						<input type="hidden" name="pmm_raw_stage_mode" value="manual">
+						<p><input type="file" name="pmm_raw_import_rows_file" accept=".tsv,.txt,.csv"> <span class="description"><?php esc_html_e('Optional: upload edited TSV to replace textarea content.', 'perchance-memory-manager'); ?></span></p>
+						<?php if (!empty($raw_preview_rows)) : ?>
+							<details style="margin:8px 0 12px 0;" open>
+								<summary><strong><?php esc_html_e('Preview Assignments (editable)', 'perchance-memory-manager'); ?></strong></summary>
+								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Showing rows %1$d-%2$d of %3$d. Edit rows, then stage. You can page through the entire review queue.', 'perchance-memory-manager'), ($raw_preview_total > 0 ? $raw_preview_offset + 1 : 0), min($raw_preview_total, $raw_preview_offset + count($raw_preview_rows_page)), $raw_preview_total)); ?></p>
+								<?php
+								$known_entities_by_section = $this->known_entities_for_raw_review($confirmed_registry, isset($data['cleaned_data']) && is_array($data['cleaned_data']) ? $data['cleaned_data'] : []);
+								$this->render_raw_import_preview_table($raw_preview_rows_page, $known_entities_by_section);
+								?>
+								<?php if ($raw_preview_total_pages > 1) : ?>
+									<p style="margin-top:8px;">
+										<?php if ($raw_preview_page > 1) : ?>
+											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page - 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Previous Page', 'perchance-memory-manager'); ?></a>
+										<?php endif; ?>
+										<span class="description" style="margin:0 8px;"><?php echo esc_html(sprintf(__('Page %1$d of %2$d', 'perchance-memory-manager'), $raw_preview_page, $raw_preview_total_pages)); ?></span>
+										<?php if ($raw_preview_page < $raw_preview_total_pages) : ?>
+											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page + 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Next Page', 'perchance-memory-manager'); ?></a>
+										<?php endif; ?>
+									</p>
+								<?php endif; ?>
+							</details>
+						<?php endif; ?>
+						<textarea name="pmm_raw_import_rows" rows="14" class="large-text code"><?php echo esc_textarea($staged_raw_rows_text); ?></textarea>
+						<?php submit_button(__('Stage Rows For Next Processing Run', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+					</form>
+					<script>
+						document.addEventListener('DOMContentLoaded', function () {
+							var form = document.getElementById('pmm-raw-stage-form');
+							if (!form) {
+								return;
+							}
+							form.addEventListener('submit', function () {
+								var rows = form.querySelectorAll('[data-pmm-raw-row]');
+								var lines = [];
+								rows.forEach(function (row) {
+									var section = row.querySelector('[name$="[section]"]');
+									var entity = row.querySelector('[name$="[entity]"]');
+									var bullet = row.querySelector('[name$="[bullet]"]');
+									if (!bullet || !bullet.value.trim()) {
+										return;
+									}
+									var sectionValue = section ? section.value : 'Notes';
+									var entityValue = entity ? entity.value : '';
+									var bulletValue = bullet.value.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+									lines.push(sectionValue + '\t' + entityValue + '\t' + bulletValue);
+								});
+								var text = form.querySelector('textarea[name="pmm_raw_import_rows"]');
+								if (text && lines.length) {
+									text.value = lines.join('\n');
+								}
+							});
+						});
+					</script>
+
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:8px;">
+						<?php wp_nonce_field('pmm_download_raw_import_rows'); ?>
+						<input type="hidden" name="action" value="pmm_download_raw_import_rows">
+						<?php submit_button(__('Download Preview/Staged TSV', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+					</form>
+
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:8px;">
+						<?php wp_nonce_field('pmm_clear_raw_import_preview'); ?>
+						<input type="hidden" name="action" value="pmm_clear_raw_import_preview">
+						<label><input type="checkbox" name="pmm_clear_staged_raw_import" value="1"> <?php esc_html_e('Also clear staged rows waiting for next processing run', 'perchance-memory-manager'); ?></label>
+						<?php submit_button(__('Clear Raw Import Preview', 'perchance-memory-manager'), 'delete', 'submit', false, ['style' => 'margin-left:8px;']); ?>
+					</form>
+				<?php endif; ?>
+
+				<?php if (!empty($staged_raw_rows)) : ?>
+					<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Currently staged: %d row(s). They will be injected on the next upload or reprocess, then cleared automatically.', 'perchance-memory-manager'), count($staged_raw_rows))); ?></p>
+				<?php endif; ?>
+				</details>
 			</div>
 
 			<?php if (!empty($data) && !empty($data['cleaned_data']) && is_array($data['cleaned_data'])) : ?>
@@ -1589,127 +1731,7 @@ class PMM_Admin {
 				</details>
 			</div>
 
-			<div class="pmm-card">
-				<details class="pmm-collapsible-section pmm-collapsible-root">
-					<summary><strong><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></strong></summary>
-				<div>
-				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('When importing raw text, add a section header "# Raw Import" (or "# New Entries") in your source file. Raw import understands bullet-delimited entries and blank-line-delimited wrapped entries, which matches common Perchance memory formats.', 'perchance-memory-manager'); ?>
-				<br><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload the edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
-			    </div>
-				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
-					<?php wp_nonce_field('pmm_preview_raw_import'); ?>
-					<input type="hidden" name="action" value="pmm_preview_raw_import">
-					<p><input type="file" name="pmm_raw_import_file" accept=".txt,.md,.log,.tsv"></p>
-					<textarea name="pmm_raw_import_text" rows="12" class="large-text code" placeholder="# Raw Import&#10;Character is a former pilot with a fractured memory...&#10;Another line from a one-entry-per-line dump"><?php echo esc_textarea($raw_preview_text); ?></textarea>
-					<?php submit_button(__('Preview Raw Import', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
-				</form>
 
-				<?php if (!empty($raw_preview_rows) || !empty($staged_raw_rows)) : ?>
-					<?php if (!empty($raw_preview_rows)) : ?>
-						<p class="description" style="margin-top:10px;">
-							<?php echo esc_html(sprintf(__('Preview confidence mix: %1$d high (>=85), %2$d medium (60-84), %3$d low (<60). Use confidence staging to avoid reviewing every row manually.', 'perchance-memory-manager'), $raw_preview_high_conf, $raw_preview_medium_conf, $raw_preview_low_conf)); ?>
-						</p>
-						<?php if ($raw_stage_mode_notice !== '') : ?>
-							<p class="description" style="margin-top:6px;"><strong><?php esc_html_e('Last confidence staging mode:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html(str_replace('_', ' ', $raw_stage_mode_notice)); ?> (<?php echo esc_html((string) $raw_confidence_threshold); ?>)</p>
-						<?php endif; ?>
-					<?php endif; ?>
-					<p class="description" style="margin-top:10px;"><?php esc_html_e('Editable staging format: Section<TAB>Entity<TAB>Entry text. Leave Entity blank to append to section-level entries like Notes/Relationships/NSFW.', 'perchance-memory-manager'); ?></p>
-					<?php if (!empty($raw_preview_rows)) : ?>
-						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-							<?php wp_nonce_field('pmm_stage_raw_import'); ?>
-							<input type="hidden" name="action" value="pmm_stage_raw_import">
-							<label>
-								<?php esc_html_e('Confidence threshold', 'perchance-memory-manager'); ?><br>
-								<input type="number" name="pmm_raw_confidence_threshold" min="1" max="99" value="<?php echo esc_attr((string) $raw_confidence_threshold); ?>" style="width:100px;">
-							</label>
-							<label>
-								<?php esc_html_e('Bulk stage mode', 'perchance-memory-manager'); ?><br>
-								<select name="pmm_raw_stage_mode">
-									<option value="all_preview_rows"><?php esc_html_e('Stage all preview rows', 'perchance-memory-manager'); ?></option>
-									<option value="high_confidence_only"><?php esc_html_e('Stage high-confidence rows only (>= threshold)', 'perchance-memory-manager'); ?></option>
-									<option value="low_confidence_only"><?php esc_html_e('Stage low-confidence review queue only (< threshold)', 'perchance-memory-manager'); ?></option>
-								</select>
-							</label>
-							<?php submit_button(__('Stage From Preview Confidence Filter', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
-						</form>
-					<?php endif; ?>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data" id="pmm-raw-stage-form" data-pmm-raw-table-complete="1">
-						<?php wp_nonce_field('pmm_stage_raw_import'); ?>
-						<input type="hidden" name="action" value="pmm_stage_raw_import">
-						<input type="hidden" name="pmm_raw_stage_mode" value="manual">
-						<p><input type="file" name="pmm_raw_import_rows_file" accept=".tsv,.txt,.csv"> <span class="description"><?php esc_html_e('Optional: upload edited TSV to replace textarea content.', 'perchance-memory-manager'); ?></span></p>
-						<?php if (!empty($raw_preview_rows)) : ?>
-							<details style="margin:8px 0 12px 0;" open>
-								<summary><strong><?php esc_html_e('Preview Assignments (editable)', 'perchance-memory-manager'); ?></strong></summary>
-								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Showing rows %1$d-%2$d of %3$d. Edit rows, then stage. You can page through the entire review queue.', 'perchance-memory-manager'), ($raw_preview_total > 0 ? $raw_preview_offset + 1 : 0), min($raw_preview_total, $raw_preview_offset + count($raw_preview_rows_page)), $raw_preview_total)); ?></p>
-								<?php
-								$known_entities_by_section = $this->known_entities_for_raw_review($confirmed_registry, isset($data['cleaned_data']) && is_array($data['cleaned_data']) ? $data['cleaned_data'] : []);
-								$this->render_raw_import_preview_table($raw_preview_rows_page, $known_entities_by_section);
-								?>
-								<?php if ($raw_preview_total_pages > 1) : ?>
-									<p style="margin-top:8px;">
-										<?php if ($raw_preview_page > 1) : ?>
-											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page - 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Previous Page', 'perchance-memory-manager'); ?></a>
-										<?php endif; ?>
-										<span class="description" style="margin:0 8px;"><?php echo esc_html(sprintf(__('Page %1$d of %2$d', 'perchance-memory-manager'), $raw_preview_page, $raw_preview_total_pages)); ?></span>
-										<?php if ($raw_preview_page < $raw_preview_total_pages) : ?>
-											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page + 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Next Page', 'perchance-memory-manager'); ?></a>
-										<?php endif; ?>
-									</p>
-								<?php endif; ?>
-							</details>
-						<?php endif; ?>
-						<textarea name="pmm_raw_import_rows" rows="14" class="large-text code"><?php echo esc_textarea($staged_raw_rows_text); ?></textarea>
-						<?php submit_button(__('Stage Rows For Next Processing Run', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
-					</form>
-					<script>
-						document.addEventListener('DOMContentLoaded', function () {
-							var form = document.getElementById('pmm-raw-stage-form');
-							if (!form) {
-								return;
-							}
-							form.addEventListener('submit', function () {
-								var rows = form.querySelectorAll('[data-pmm-raw-row]');
-								var lines = [];
-								rows.forEach(function (row) {
-									var section = row.querySelector('[name$="[section]"]');
-									var entity = row.querySelector('[name$="[entity]"]');
-									var bullet = row.querySelector('[name$="[bullet]"]');
-									if (!bullet || !bullet.value.trim()) {
-										return;
-									}
-									var sectionValue = section ? section.value : 'Notes';
-									var entityValue = entity ? entity.value : '';
-									var bulletValue = bullet.value.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
-									lines.push(sectionValue + '\t' + entityValue + '\t' + bulletValue);
-								});
-								var text = form.querySelector('textarea[name="pmm_raw_import_rows"]');
-								if (text && lines.length) {
-									text.value = lines.join('\n');
-								}
-							});
-						});
-					</script>
-
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:8px;">
-						<?php wp_nonce_field('pmm_download_raw_import_rows'); ?>
-						<input type="hidden" name="action" value="pmm_download_raw_import_rows">
-						<?php submit_button(__('Download Preview/Staged TSV', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
-					</form>
-
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:8px;">
-						<?php wp_nonce_field('pmm_clear_raw_import_preview'); ?>
-						<input type="hidden" name="action" value="pmm_clear_raw_import_preview">
-						<label><input type="checkbox" name="pmm_clear_staged_raw_import" value="1"> <?php esc_html_e('Also clear staged rows waiting for next processing run', 'perchance-memory-manager'); ?></label>
-						<?php submit_button(__('Clear Raw Import Preview', 'perchance-memory-manager'), 'delete', 'submit', false, ['style' => 'margin-left:8px;']); ?>
-					</form>
-				<?php endif; ?>
-
-				<?php if (!empty($staged_raw_rows)) : ?>
-					<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Currently staged: %d row(s). They will be injected on the next upload or reprocess, then cleared automatically.', 'perchance-memory-manager'), count($staged_raw_rows))); ?></p>
-				<?php endif; ?>
-				</details>
-			</div>
 
 			<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
 				<div class="pmm-card">
@@ -2901,8 +2923,13 @@ class PMM_Admin {
 		if (!is_array($rules)) {
 			$rules = [];
 		}
+		$first_name_exclusions = get_option('pmm_first_name_alias_exclusions', []);
+		if (!is_array($first_name_exclusions)) {
+			$first_name_exclusions = [];
+		}
 
 		$rules_text = $this->serialize_alias_rules($rules);
+		$first_name_exclusions_text = $this->serialize_simple_lines($first_name_exclusions);
 
 		echo '<p class="description" style="margin-top:0;">' . esc_html__('Use aliases when nickname/short-name variants should resolve to the same character, location, or organization without deleting either wording. Example: Max => Black Max.', 'perchance-memory-manager') . '</p>';
 		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
@@ -2910,6 +2937,9 @@ class PMM_Admin {
 		echo '<input type="hidden" name="action" value="pmm_save_alias_rules">';
 		echo '<textarea name="pmm_alias_rules_text" rows="8" class="large-text code" placeholder="Alias Name => Canonical Name">' . esc_textarea($rules_text) . '</textarea>';
 		echo '<p class="description" style="margin-top:8px;">' . esc_html__('One mapping per line. Supported separators: =>, =, or tab. Save and reprocess to apply across output and similarity checks.', 'perchance-memory-manager') . '</p>';
+		echo '<p style="margin-top:10px;margin-bottom:4px;"><strong>' . esc_html__('Exclude Words From Auto First-Name Matching', 'perchance-memory-manager') . '</strong></p>';
+		echo '<textarea name="pmm_first_name_alias_exclusions_text" rows="5" class="large-text code" placeholder="Black">' . esc_textarea($first_name_exclusions_text) . '</textarea>';
+		echo '<p class="description" style="margin-top:8px;">' . esc_html__('One word or phrase per line. These entries are ignored by automatic first-name alias mapping, but manual alias rules above still apply.', 'perchance-memory-manager') . '</p>';
 		submit_button(__('Save Alias Rules', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-top:8px;']);
 		echo '</form>';
 	}
@@ -3353,6 +3383,24 @@ class PMM_Admin {
 			}
 		}
 
+		sort($lines, SORT_NATURAL | SORT_FLAG_CASE);
+		return implode("\n", $lines);
+	}
+
+	private function serialize_simple_lines($items) {
+		if (empty($items) || !is_array($items)) {
+			return '';
+		}
+
+		$lines = [];
+		foreach ($items as $item) {
+			$item = trim((string) $item);
+			if ($item !== '') {
+				$lines[] = $item;
+			}
+		}
+
+		$lines = array_values(array_unique($lines));
 		sort($lines, SORT_NATURAL | SORT_FLAG_CASE);
 		return implode("\n", $lines);
 	}

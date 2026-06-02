@@ -90,10 +90,16 @@ class PMM_Parser {
 	 */
 	private $first_name_alias_map = [];
 
+	/**
+	 * Lowercased tokens that should never be auto-mapped as first-name aliases.
+	 */
+	private $first_name_alias_exclusions = [];
+
 	public function __construct() {
 		$this->alias_map = $this->merge_persisted_alias_rules($this->alias_map);
 		$this->classification_settings = $this->get_classification_settings_option();
 		$this->confirmed_entities = $this->get_confirmed_entities_registry_option();
+		$this->first_name_alias_exclusions = $this->get_first_name_alias_exclusions_option();
 		$this->first_name_alias_map = $this->derive_first_name_alias_map();
 	}
 
@@ -986,6 +992,9 @@ class PMM_Parser {
 			}
 
 			$first_lc = mb_strtolower($first);
+			if (isset($this->first_name_alias_exclusions[$first_lc])) {
+				continue;
+			}
 			if (!isset($first_name_buckets[$first_lc])) {
 				$first_name_buckets[$first_lc] = ['first' => $first, 'canonicals' => []];
 			}
@@ -1955,5 +1964,31 @@ class PMM_Parser {
 		}
 
 		return $out;
+	}
+
+	private function get_first_name_alias_exclusions_option() {
+		$defaults = [
+			'black',
+		];
+
+		if (!function_exists('get_option')) {
+			return array_fill_keys($defaults, true);
+		}
+
+		$stored = get_option('pmm_first_name_alias_exclusions', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$words = [];
+		foreach (array_merge($defaults, $stored) as $word) {
+			$word = sanitize_text_field(trim((string) $word));
+			if ($word === '') {
+				continue;
+			}
+			$words[mb_strtolower($word)] = true;
+		}
+
+		return $words;
 	}
 }
