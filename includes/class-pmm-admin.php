@@ -437,10 +437,6 @@ class PMM_Admin {
 				<p><?php esc_html_e('Upload a Perchance Chat lore or memory file, even character or world information (.txt or .md), to clean, reorganize and manage.', 'perchance-memory-manager'); ?></p>
 			</div>
 
-			<div class="notice notice-info">
-				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('To force loose/raw lines into intake, add a section header "# Raw Import" (or "# New Entries") in your source file. Raw import understands bullet-delimited entries and blank-line-delimited wrapped entries, which matches common Perchance memory formats.', 'perchance-memory-manager'); ?></p>
-			</div>
-
 			<?php if ($latest_version_public_url !== '') : ?>
 				<div class="notice notice-info">
 					<p><strong><?php esc_html_e('Latest Version URL:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('Use this direct link in Perchance for the newest saved file.', 'perchance-memory-manager'); ?></p>
@@ -1495,7 +1491,8 @@ class PMM_Admin {
 				</div>
 
 				<div class="pmm-card">
-					<h2><?php esc_html_e('Global Search & Replace', 'perchance-memory-manager'); ?></h2>
+					<details class="pmm-collapsible-section pmm-collapsible-root">
+						<summary><strong><?php esc_html_e('Global Search & Replace', 'perchance-memory-manager'); ?></strong></summary>
 					<p class="description"><?php esc_html_e('Search across the current output and replace matches safely. If multiple entities in the same section end up with the same name, their entries are merged instead of lost.', 'perchance-memory-manager'); ?></p>
 					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
 						<?php wp_nonce_field('pmm_global_search_replace'); ?>
@@ -1525,6 +1522,7 @@ class PMM_Admin {
 						<p class="description"><?php esc_html_e('When entity names collapse to the same name in a section, their entries are merged automatically.', 'perchance-memory-manager'); ?></p>
 						<?php submit_button(__('Apply Global Replace', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
 					</form>
+					</details>
 				</div>
 			<?php endif; ?>
 
@@ -1594,7 +1592,10 @@ class PMM_Admin {
 			<div class="pmm-card">
 				<details class="pmm-collapsible-section pmm-collapsible-root">
 					<summary><strong><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></strong></summary>
-				<p><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
+				<div>
+				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('When importing raw text, add a section header "# Raw Import" (or "# New Entries") in your source file. Raw import understands bullet-delimited entries and blank-line-delimited wrapped entries, which matches common Perchance memory formats.', 'perchance-memory-manager'); ?>
+				<br><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload the edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
+			    </div>
 				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
 					<?php wp_nonce_field('pmm_preview_raw_import'); ?>
 					<input type="hidden" name="action" value="pmm_preview_raw_import">
@@ -1713,42 +1714,36 @@ class PMM_Admin {
 			<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
 				<div class="pmm-card">
 					<details class="pmm-collapsible-section pmm-collapsible-root">
-						<summary><strong><?php esc_html_e('Entity Management Functions', 'perchance-memory-manager'); ?></strong></summary>
-						<div class="pmm-collapsible-group" style="margin-top:10px;">
-							<details class="pmm-collapsible-section">
-								<summary><strong><?php esc_html_e('Similar Entity Review', 'perchance-memory-manager'); ?></strong></summary>
-								<div style="margin-top:10px;">
-									<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? [], isset($data['entity_report']['similar_candidates_total_found']) ? (int) $data['entity_report']['similar_candidates_total_found'] : null, !empty($data['entity_report']['similar_candidates_truncated'])); ?>
-								</div>
-							</details>
+						<summary><strong><?php esc_html_e('Similar Entity Review', 'perchance-memory-manager'); ?></strong></summary>
+						<div style="margin-top:10px;">
+							<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? [], isset($data['entity_report']['similar_candidates_total_found']) ? (int) $data['entity_report']['similar_candidates_total_found'] : null, !empty($data['entity_report']['similar_candidates_truncated'])); ?>
+						</div>
+					</details>
+				</div>
 
-							<details class="pmm-collapsible-section">
-								<summary><strong><?php esc_html_e('Questionable Entry Review', 'perchance-memory-manager'); ?></strong></summary>
-								<div style="margin-top:10px;">
-									<?php $this->render_questionable_entry_review($data['entity_report']['questionable_entries'] ?? [], isset($data['entity_report']['questionable_entries_total_found']) ? (int) $data['entity_report']['questionable_entries_total_found'] : null); ?>
-								</div>
-							</details>
+				<div class="pmm-card">
+					<details class="pmm-collapsible-section pmm-collapsible-root">
+						<summary><strong><?php esc_html_e('Questionable Entry Review', 'perchance-memory-manager'); ?></strong></summary>
+						<div style="margin-top:10px;">
+							<?php $this->render_questionable_entry_review($data['entity_report']['questionable_entries'] ?? [], isset($data['entity_report']['questionable_entries_total_found']) ? (int) $data['entity_report']['questionable_entries_total_found'] : null); ?>
+						</div>
+					</details>
+				</div>
 
-							<details class="pmm-collapsible-section">
-								<summary><strong><?php esc_html_e('Automated Reclassification Review', 'perchance-memory-manager'); ?></strong></summary>
-								<div style="margin-top:10px;">
-									<?php $this->render_reclassification_review($data['entity_report']['reclassification_candidates'] ?? [], isset($data['entity_report']['reclassification_candidates_total_found']) ? (int) $data['entity_report']['reclassification_candidates_total_found'] : null); ?>
-								</div>
-							</details>
+				<div class="pmm-card">
+					<details class="pmm-collapsible-section pmm-collapsible-root">
+						<summary><strong><?php esc_html_e('Automated Reclassification Review', 'perchance-memory-manager'); ?></strong></summary>
+						<div style="margin-top:10px;">
+							<?php $this->render_reclassification_review($data['entity_report']['reclassification_candidates'] ?? [], isset($data['entity_report']['reclassification_candidates_total_found']) ? (int) $data['entity_report']['reclassification_candidates_total_found'] : null); ?>
+						</div>
+					</details>
+				</div>
 
-							<details class="pmm-collapsible-section">
-								<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
-								<div style="margin-top:10px;">
-									<?php $this->render_alias_rules_manager(); ?>
-								</div>
-							</details>
-
-							<details class="pmm-collapsible-section">
-								<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
-								<div style="margin-top:10px;">
-									<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
-								</div>
-							</details>
+				<div class="pmm-card">
+					<details class="pmm-collapsible-section pmm-collapsible-root">
+						<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
+						<div style="margin-top:10px;">
+							<?php $this->render_alias_rules_manager(); ?>
 						</div>
 					</details>
 				</div>
@@ -1764,6 +1759,13 @@ class PMM_Admin {
 									<summary><strong><?php esc_html_e('New Entities Added During Processing', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
 										<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
+									</div>
+								</details>
+
+								<details class="pmm-collapsible-section">
+									<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
+									<div style="margin-top:10px;">
+										<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
 									</div>
 								</details>
 							<?php endif; ?>
