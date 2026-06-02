@@ -53,20 +53,28 @@ class PMM_Admin {
 		$entity_updated = isset($_GET['pmm_entity_updated']) ? (int) $_GET['pmm_entity_updated'] : 0;
 		$preview_saved = isset($_GET['pmm_preview_saved']) ? (int) $_GET['pmm_preview_saved'] : 0;
 		$alias_saved = isset($_GET['pmm_alias_saved']) ? (int) $_GET['pmm_alias_saved'] : -1;
+		$confirmed_imported = isset($_GET['pmm_confirmed_imported']) ? (int) $_GET['pmm_confirmed_imported'] : -1;
+		$confirmed_updated = isset($_GET['pmm_confirmed_updated']) ? (int) $_GET['pmm_confirmed_updated'] : 0;
+		$confirmed_section = isset($_GET['pmm_confirmed_section']) ? sanitize_text_field(wp_unslash($_GET['pmm_confirmed_section'])) : '';
+		$confirmed_saved = isset($_GET['pmm_confirmed_saved']) ? (int) $_GET['pmm_confirmed_saved'] : -1;
 		$reprocessed = isset($_GET['pmm_reprocessed']) ? (int) $_GET['pmm_reprocessed'] : 0;
 		$global_replaced = isset($_GET['pmm_global_replaced']) ? (int) $_GET['pmm_global_replaced'] : 0;
 		$global_renamed = isset($_GET['pmm_global_renamed']) ? (int) $_GET['pmm_global_renamed'] : 0;
 		$global_merged = isset($_GET['pmm_global_merged']) ? (int) $_GET['pmm_global_merged'] : 0;
 		$global_entries = isset($_GET['pmm_global_entries']) ? (int) $_GET['pmm_global_entries'] : 0;
 		$global_scope = isset($_GET['pmm_global_scope']) ? sanitize_key(wp_unslash($_GET['pmm_global_scope'])) : 'both';
-		$global_entity_name = isset($_GET['pmm_global_entity_name']) ? sanitize_text_field(wp_unslash($_GET['pmm_global_entity_name'])) : '';
-		$global_entity_page = isset($_GET['pmm_global_entity_page']) ? max(1, (int) $_GET['pmm_global_entity_page']) : 1;
-		$global_entity_per_page = isset($_GET['pmm_global_entity_per_page']) ? max(25, min(100, (int) $_GET['pmm_global_entity_per_page'])) : 50;
-		$global_entity_saved = isset($_GET['pmm_global_entity_saved']) ? (int) $_GET['pmm_global_entity_saved'] : -1;
-		$global_entity_reviewed = isset($_GET['pmm_global_entity_reviewed']) ? (int) $_GET['pmm_global_entity_reviewed'] : 0;
-		$global_entity_moved = isset($_GET['pmm_global_entity_moved']) ? (int) $_GET['pmm_global_entity_moved'] : 0;
-		$global_entity_removed = isset($_GET['pmm_global_entity_removed']) ? (int) $_GET['pmm_global_entity_removed'] : 0;
-		$global_entity_updated = isset($_GET['pmm_global_entity_updated']) ? (int) $_GET['pmm_global_entity_updated'] : 0;
+		$entry_convert_section = isset($_GET['pmm_entry_convert_section']) ? sanitize_text_field(wp_unslash($_GET['pmm_entry_convert_section'])) : 'all';
+		$entry_convert_entity = isset($_GET['pmm_entry_convert_entity']) ? sanitize_text_field(wp_unslash($_GET['pmm_entry_convert_entity'])) : '';
+		$entry_convert_search = isset($_GET['pmm_entry_convert_search']) ? sanitize_text_field(wp_unslash($_GET['pmm_entry_convert_search'])) : '';
+		$entry_convert_include_mentions = isset($_GET['pmm_entry_convert_include_mentions']) ? ((int) $_GET['pmm_entry_convert_include_mentions'] === 1) : null;
+		$entry_convert_load = isset($_GET['pmm_entry_convert_load']) ? ((int) $_GET['pmm_entry_convert_load'] === 1) : false;
+		$entry_convert_page = isset($_GET['pmm_entry_convert_page']) ? max(1, (int) $_GET['pmm_entry_convert_page']) : 1;
+		$entry_convert_per_page = isset($_GET['pmm_entry_convert_per_page']) ? max(25, min(100, (int) $_GET['pmm_entry_convert_per_page'])) : 50;
+		$entry_convert_saved = isset($_GET['pmm_entry_convert_saved']) ? (int) $_GET['pmm_entry_convert_saved'] : -1;
+		$entry_convert_reviewed = isset($_GET['pmm_entry_convert_reviewed']) ? (int) $_GET['pmm_entry_convert_reviewed'] : 0;
+		$entry_convert_moved = isset($_GET['pmm_entry_convert_moved']) ? (int) $_GET['pmm_entry_convert_moved'] : 0;
+		$entry_convert_removed = isset($_GET['pmm_entry_convert_removed']) ? (int) $_GET['pmm_entry_convert_removed'] : 0;
+		$entry_convert_updated = isset($_GET['pmm_entry_convert_updated']) ? (int) $_GET['pmm_entry_convert_updated'] : 0;
 		$entity_pruned = isset($_GET['pmm_entity_pruned']) ? (int) $_GET['pmm_entity_pruned'] : 0;
 		$prune_preview = isset($_GET['pmm_prune_preview']) ? (int) $_GET['pmm_prune_preview'] : 0;
 		$prune_section = isset($_GET['pmm_prune_section']) ? sanitize_text_field(wp_unslash($_GET['pmm_prune_section'])) : '';
@@ -76,6 +84,7 @@ class PMM_Admin {
 		$prune_exact = isset($_GET['pmm_prune_exact']) ? (int) $_GET['pmm_prune_exact'] : 0;
 		$prune_near = isset($_GET['pmm_prune_near']) ? (int) $_GET['pmm_prune_near'] : 0;
 		$prune_stale = isset($_GET['pmm_prune_stale']) ? (int) $_GET['pmm_prune_stale'] : 0;
+		$prune_unref = isset($_GET['pmm_prune_unref']) ? (int) $_GET['pmm_prune_unref'] : 0;
 		$prune_critical = isset($_GET['pmm_prune_critical']) ? (int) $_GET['pmm_prune_critical'] : 0;
 		$prune_trimmed = isset($_GET['pmm_prune_trimmed']) ? (int) $_GET['pmm_prune_trimmed'] : 0;
 		$prune_preview_data = get_transient('pmm_prune_preview_' . get_current_user_id());
@@ -112,6 +121,9 @@ class PMM_Admin {
 		}
 		$similarity_thresholds = array_merge($similarity_threshold_defaults, $similarity_thresholds);
 		$classification_defaults = [
+			'auto_classify_new_entries' => 0,
+			'strict_prefix_review_mode' => 1,
+			'allow_non_prefix_auto_match' => 0,
 			'character_veto' => 1,
 			'organizations_min_score' => 2,
 			'locations_min_score' => 2,
@@ -124,6 +136,9 @@ class PMM_Admin {
 			$classification_settings = [];
 		}
 		$classification_settings = array_merge($classification_defaults, $classification_settings);
+		$classification_settings['auto_classify_new_entries'] = !empty($classification_settings['auto_classify_new_entries']) ? 1 : 0;
+		$classification_settings['strict_prefix_review_mode'] = !empty($classification_settings['strict_prefix_review_mode']) ? 1 : 0;
+		$classification_settings['allow_non_prefix_auto_match'] = !empty($classification_settings['allow_non_prefix_auto_match']) ? 1 : 0;
 		$classification_settings['character_veto'] = !empty($classification_settings['character_veto']) ? 1 : 0;
 		$classification_settings['organizations_min_score'] = max(1, min(3, (int) $classification_settings['organizations_min_score']));
 		$classification_settings['locations_min_score'] = max(1, min(3, (int) $classification_settings['locations_min_score']));
@@ -139,6 +154,9 @@ class PMM_Admin {
 		}
 		$global_entity_report_settings = array_merge($global_entity_report_defaults, $global_entity_report_settings);
 		$global_entity_report_settings['include_mentions'] = !empty($global_entity_report_settings['include_mentions']) ? 1 : 0;
+		if ($entry_convert_include_mentions === null) {
+			$entry_convert_include_mentions = !empty($global_entity_report_settings['include_mentions']);
+		}
 		$questionable_defaults = [
 			'min_words' => 4,
 			'min_chars' => 18,
@@ -162,6 +180,21 @@ class PMM_Admin {
 		$raw_preview = get_transient('pmm_raw_import_preview_' . get_current_user_id());
 		$raw_preview_rows = (isset($raw_preview['rows']) && is_array($raw_preview['rows'])) ? $raw_preview['rows'] : [];
 		$raw_preview_text = isset($raw_preview['raw_text']) ? (string) $raw_preview['raw_text'] : '';
+		$raw_confidence_threshold = isset($_GET['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) $_GET['pmm_raw_confidence_threshold'])) : 75;
+		$raw_stage_mode_notice = isset($_GET['pmm_raw_stage_mode']) ? sanitize_key((string) wp_unslash($_GET['pmm_raw_stage_mode'])) : '';
+		$raw_preview_high_conf = 0;
+		$raw_preview_medium_conf = 0;
+		$raw_preview_low_conf = 0;
+		foreach ((array) $raw_preview_rows as $raw_row) {
+			$confidence = isset($raw_row['confidence']) ? (int) $raw_row['confidence'] : 50;
+			if ($confidence >= 85) {
+				++$raw_preview_high_conf;
+			} elseif ($confidence >= 60) {
+				++$raw_preview_medium_conf;
+			} else {
+				++$raw_preview_low_conf;
+			}
+		}
 		$staged_raw_rows = get_transient('pmm_staged_raw_import_' . get_current_user_id());
 		if (!is_array($staged_raw_rows)) {
 			$staged_raw_rows = [];
@@ -170,7 +203,15 @@ class PMM_Admin {
 		if ($staged_raw_rows_text === '') {
 			$staged_raw_rows_text = $this->serialize_staged_raw_import_rows($staged_raw_rows);
 		}
-		$raw_preview_limit = 80;
+		$raw_preview_page = isset($_GET['pmm_raw_preview_page']) ? max(1, (int) $_GET['pmm_raw_preview_page']) : 1;
+		$raw_preview_per_page = isset($_GET['pmm_raw_preview_per_page']) ? max(25, min(300, (int) $_GET['pmm_raw_preview_per_page'])) : 100;
+		$raw_preview_total = count($raw_preview_rows);
+		$raw_preview_total_pages = max(1, (int) ceil($raw_preview_total / max(1, $raw_preview_per_page)));
+		if ($raw_preview_page > $raw_preview_total_pages) {
+			$raw_preview_page = $raw_preview_total_pages;
+		}
+		$raw_preview_offset = ($raw_preview_page - 1) * $raw_preview_per_page;
+		$raw_preview_rows_page = array_slice($raw_preview_rows, $raw_preview_offset, $raw_preview_per_page, true);
 		$rules_dirty = get_option('pmm_output_rules_dirty', '0') === '1';
 		$rules_dirty_at = (int) get_option('pmm_output_rules_dirty_at', 0);
 		$latest_version_file = (string) get_option('pmm_latest_version_filename', '');
@@ -184,6 +225,25 @@ class PMM_Admin {
 			$version_history = [];
 		}
 		$version_history = array_slice($version_history, 0, 10);
+		$confirmed_registry = $this->get_confirmed_entity_registry_option();
+		$confirmed_section_text_map = [];
+		foreach ($this->entity_sections() as $entity_section_name) {
+			$section_rows = isset($confirmed_registry[$entity_section_name]) && is_array($confirmed_registry[$entity_section_name]) ? $confirmed_registry[$entity_section_name] : [];
+			$section_names = [];
+			foreach ($section_rows as $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+				$name = isset($row['name']) ? trim((string) $row['name']) : '';
+				if ($name !== '') {
+					$section_names[] = $name;
+				}
+			}
+			$section_names = array_values(array_unique($section_names));
+			sort($section_names, SORT_NATURAL | SORT_FLAG_CASE);
+			$confirmed_section_text_map[$entity_section_name] = implode("\n", $section_names);
+		}
+		$confirmed_edit_section = ($confirmed_section !== '' && in_array($confirmed_section, $this->entity_sections(), true)) ? $confirmed_section : 'Characters';
 
 		if (!$has_last_output) {
 			$latest_version_path = (string) get_option('pmm_latest_version_file_path', '');
@@ -204,7 +264,7 @@ class PMM_Admin {
 							'entities' => PMM_Utils::count_entities($cleaned),
 							'bullets' => PMM_Utils::count_bullets($cleaned),
 							'mode' => (string) get_option('pmm_last_mode', 'balanced'),
-							'format' => (string) get_option('pmm_last_format', 'md'),
+							'format' => (string) get_option('pmm_last_format', 'txt'),
 							'original_filename' => $latest_version_file !== '' ? $latest_version_file : basename($latest_version_path),
 							'version_filename' => $latest_version_file,
 							'version_saved_at' => $latest_version_saved_at,
@@ -245,10 +305,15 @@ class PMM_Admin {
 		$preview_sections = [];
 		$preview_entities = [];
 		$global_entity_section_options = [];
-		$global_entity_rows = [];
-		$global_entity_total = 0;
-		$global_entity_total_pages = 1;
-		$global_entity_snapshot = '';
+		$entry_convert_rows = [];
+		$entry_convert_total = 0;
+		$entry_convert_total_pages = 1;
+		$entry_convert_snapshot = '';
+		$entry_convert_section_options = [
+			'New Entries' => 'New Entries',
+			'all' => __('All Sections', 'perchance-memory-manager'),
+		];
+		$entry_convert_entity_options = [];
 		$entity_ajax_nonce = wp_create_nonce('pmm_get_entities_for_section');
 		$recent_actions = [];
 		if ($success && !empty($data)) {
@@ -290,9 +355,6 @@ class PMM_Admin {
 		if ($global_replaced) {
 			$recent_actions[] = sprintf(__('Global search and replace applied (%d entity renames, %d merges, %d entry updates).', 'perchance-memory-manager'), $global_renamed, $global_merged, $global_entries);
 		}
-		if ($global_entity_saved >= 0) {
-			$recent_actions[] = sprintf(__('Global entity report saved: %1$d reviewed, %2$d changed.', 'perchance-memory-manager'), max(0, $global_entity_reviewed), max(0, $global_entity_saved));
-		}
 		if ($entity_report_rebuilt) {
 			$recent_actions[] = __('Entity report was rebuilt from current output because report data was missing.', 'perchance-memory-manager');
 		}
@@ -328,25 +390,44 @@ class PMM_Admin {
 			sort($preview_sections, SORT_NATURAL | SORT_FLAG_CASE);
 			$preview_entities = array_keys($preview_entities);
 			sort($preview_entities, SORT_NATURAL | SORT_FLAG_CASE);
-			$all_sections_for_report = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
+			$all_sections_for_report = ['New Entries', 'Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
+			$entry_convert_section_options = [];
 			foreach ($all_sections_for_report as $sec) {
 				$global_entity_section_options[$sec] = $this->entity_options_for_section((array) $data['cleaned_data'], $sec);
+				$entry_convert_section_options[$sec] = $sec;
+			}
+			$entry_convert_section_options['all'] = __('All Sections', 'perchance-memory-manager');
+
+			if (!isset($entry_convert_section_options[$entry_convert_section])) {
+				$entry_convert_section = 'all';
 			}
 
-			if ($global_entity_name !== '' && !in_array($global_entity_name, $preview_entities, true)) {
-				$global_entity_name = '';
+			$entry_convert_entity_options = [];
+			if ($entry_convert_section === 'all') {
+				$entry_convert_entity_options = $preview_entities;
+			} elseif (isset($global_entity_section_options[$entry_convert_section]) && is_array($global_entity_section_options[$entry_convert_section])) {
+				$entry_convert_entity_options = $global_entity_section_options[$entry_convert_section];
 			}
 
-			if ($global_entity_name !== '') {
-				$all_rows = $this->build_global_entity_rows((array) $data['cleaned_data'], $global_entity_name, !empty($global_entity_report_settings['include_mentions']));
-				$global_entity_total = count($all_rows);
-				$global_entity_total_pages = max(1, (int) ceil($global_entity_total / max(1, $global_entity_per_page)));
-				$global_entity_page = min($global_entity_total_pages, max(1, $global_entity_page));
-				$offset = ($global_entity_page - 1) * $global_entity_per_page;
-				$global_entity_rows = array_slice($all_rows, $offset, $global_entity_per_page);
+			if ($entry_convert_entity !== '' && !in_array($entry_convert_entity, $entry_convert_entity_options, true)) {
+				$entry_convert_entity = '';
 			}
 
-			$global_entity_snapshot = md5((string) ($data['content'] ?? ''));
+			if ($entry_convert_load) {
+				$all_entry_convert_rows = $this->build_entry_conversion_rows((array) $data['cleaned_data'], [
+					'section' => $entry_convert_section,
+					'entity' => $entry_convert_entity,
+					'search' => $entry_convert_search,
+					'include_mentions' => $entry_convert_include_mentions ? 1 : 0,
+				]);
+				$entry_convert_total = count($all_entry_convert_rows);
+				$entry_convert_total_pages = max(1, (int) ceil($entry_convert_total / max(1, $entry_convert_per_page)));
+				$entry_convert_page = min($entry_convert_total_pages, max(1, $entry_convert_page));
+				$entry_convert_offset = ($entry_convert_page - 1) * $entry_convert_per_page;
+				$entry_convert_rows = array_slice($all_entry_convert_rows, $entry_convert_offset, $entry_convert_per_page);
+			}
+
+			$entry_convert_snapshot = md5((string) ($data['content'] ?? ''));
 		}
 		?>
 		<div class="wrap pmm-wrap">
@@ -463,6 +544,14 @@ class PMM_Admin {
 				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Saved %d alias rules.', 'perchance-memory-manager'), $alias_saved)); ?></p></div>
 			<?php endif; ?>
 
+			<?php if ($confirmed_imported >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Imported %1$d new confirmed entities and updated %2$d existing records for section %3$s.', 'perchance-memory-manager'), max(0, $confirmed_imported), max(0, $confirmed_updated), ($confirmed_section !== '' ? $confirmed_section : __('(unknown)', 'perchance-memory-manager')))); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ($confirmed_saved >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Saved %1$d confirmed entities for section %2$s.', 'perchance-memory-manager'), max(0, $confirmed_saved), ($confirmed_section !== '' ? $confirmed_section : __('(unknown)', 'perchance-memory-manager')))); ?></p></div>
+			<?php endif; ?>
+
 			<?php if ($reprocessed) : ?>
 				<div class="notice notice-info"><p><?php esc_html_e('Reprocessing started from last output. No re-upload needed.', 'perchance-memory-manager'); ?></p></div>
 			<?php endif; ?>
@@ -471,12 +560,12 @@ class PMM_Admin {
 				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Global search and replace completed in %1$s scope. Renamed %2$d entity buckets, merged %3$d duplicates, and updated %4$d entries.', 'perchance-memory-manager'), $global_scope, $global_renamed, $global_merged, $global_entries)); ?></p></div>
 			<?php endif; ?>
 
-			<?php if ($global_entity_saved >= 0) : ?>
-				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Global entity report saved: %1$d reviewed, %2$d changed (moved: %3$d, removed: %4$d, text-updated: %5$d).', 'perchance-memory-manager'), max(0, $global_entity_reviewed), max(0, $global_entity_saved), max(0, $global_entity_moved), max(0, $global_entity_removed), max(0, $global_entity_updated))); ?></p></div>
+			<?php if ($entry_convert_saved >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entry conversion saved: %1$d reviewed, %2$d changed (moved: %3$d, removed: %4$d, text-updated: %5$d).', 'perchance-memory-manager'), max(0, $entry_convert_reviewed), max(0, $entry_convert_saved), max(0, $entry_convert_moved), max(0, $entry_convert_removed), max(0, $entry_convert_updated))); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($entity_pruned) : ?>
-				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entity prune completed: %1$d -> %2$d entries (exact duplicates removed: %3$d, near duplicates removed: %4$d, stale removed: %5$d, critical entries preserved: %6$d, trimmed to cap: %7$d).', 'perchance-memory-manager'), max(0, $prune_before), max(0, $prune_after), max(0, $prune_exact), max(0, $prune_near), max(0, $prune_stale), max(0, $prune_critical), max(0, $prune_trimmed))); ?></p></div>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entity prune completed: %1$d -> %2$d entries (exact duplicates removed: %3$d, near duplicates removed: %4$d, stale removed: %5$d, unreferenced removed: %6$d, critical entries preserved: %7$d, trimmed to cap: %8$d).', 'perchance-memory-manager'), max(0, $prune_before), max(0, $prune_after), max(0, $prune_exact), max(0, $prune_near), max(0, $prune_stale), max(0, $prune_unref), max(0, $prune_critical), max(0, $prune_trimmed))); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($prune_preview && !empty($prune_preview_data['stats']) && is_array($prune_preview_data['stats'])) : ?>
@@ -602,8 +691,8 @@ class PMM_Admin {
 							<th scope="row"><label for="pmm_format"><?php esc_html_e('Output Format', 'perchance-memory-manager'); ?></label></th>
 							<td>
 								<select id="pmm_format" name="pmm_format">
-									<option value="md" selected><?php esc_html_e('Markdown (.md)', 'perchance-memory-manager'); ?></option>
-									<option value="txt"><?php esc_html_e('Plain Text (.txt)', 'perchance-memory-manager'); ?></option>
+									<option value="txt" <?php selected((string) get_option('pmm_last_format', 'txt'), 'txt'); ?>><?php esc_html_e('Plain Text (.txt)', 'perchance-memory-manager'); ?></option>
+									<option value="md" <?php selected((string) get_option('pmm_last_format', 'txt'), 'md'); ?>><?php esc_html_e('Markdown (.md)', 'perchance-memory-manager'); ?></option>
 								</select>
 							</td>
 						</tr>
@@ -655,6 +744,18 @@ class PMM_Admin {
 							<th scope="row"><?php esc_html_e('Section Classification Guards', 'perchance-memory-manager'); ?></th>
 							<td>
 								<label style="display:block;margin-bottom:8px;">
+									<input type="checkbox" id="pmm_auto_classify_new_entries" name="pmm_auto_classify_new_entries" value="1" <?php checked(!empty($classification_settings['auto_classify_new_entries'])); ?>>
+									<?php esc_html_e('Auto-classify New Entries during processing (turn off to keep all new rows in New Entries for manual review first)', 'perchance-memory-manager'); ?>
+								</label>
+								<label style="display:block;margin-bottom:8px;">
+									<input type="checkbox" id="pmm_strict_prefix_review_mode" name="pmm_strict_prefix_review_mode" value="1" <?php checked(!empty($classification_settings['strict_prefix_review_mode'])); ?>>
+									<?php esc_html_e('Strict mode: only auto-route when the entry starts with an exact known entity or alias; unmatched entries remain in New Entries for review', 'perchance-memory-manager'); ?>
+								</label>
+								<label style="display:block;margin-bottom:8px;">
+									<input type="checkbox" id="pmm_allow_non_prefix_auto_match" name="pmm_allow_non_prefix_auto_match" value="1" <?php checked(!empty($classification_settings['allow_non_prefix_auto_match'])); ?>>
+									<?php esc_html_e('Allow fuzzy non-prefix entity auto-match when strict mode does not find a leading match', 'perchance-memory-manager'); ?>
+								</label>
+								<label style="display:block;margin-bottom:8px;">
 									<input type="checkbox" id="pmm_character_fact_veto" name="pmm_character_fact_veto" value="1" <?php checked(!empty($classification_settings['character_veto'])); ?>>
 									<?php esc_html_e('Prevent character-style facts from being auto-routed to Organizations, Locations, Technology / Systems, Vehicles / Transportation, or World Building', 'perchance-memory-manager'); ?>
 								</label>
@@ -696,16 +797,6 @@ class PMM_Admin {
 							</td>
 						</tr>
 						<tr>
-							<th scope="row"><?php esc_html_e('Global Entity Report Matching', 'perchance-memory-manager'); ?></th>
-							<td>
-								<label>
-									<input type="checkbox" id="pmm_global_entity_include_mentions" name="pmm_global_entity_include_mentions" value="1" <?php checked(!empty($global_entity_report_settings['include_mentions'])); ?>>
-									<?php esc_html_e('Include entries that mention the selected entity name (not only exact entity buckets)', 'perchance-memory-manager'); ?>
-								</label>
-								<p class="description"><?php esc_html_e('Disable for strict exact-entity reporting. Enable for broader cross-section review.', 'perchance-memory-manager'); ?></p>
-							</td>
-						</tr>
-						<tr>
 							<th scope="row"><?php esc_html_e('Questionable Entry Review Tuning', 'perchance-memory-manager'); ?></th>
 							<td>
 								<label style="display:inline-block;margin-right:12px;"><?php esc_html_e('Min words to avoid short flag', 'perchance-memory-manager'); ?>
@@ -740,7 +831,9 @@ class PMM_Admin {
 						rescanConfidenceNumber: document.getElementById('pmm_rescan_confidence_number'),
 						rescanPreviewOnly: document.getElementById('pmm_rescan_preview_only'),
 						characterFactVeto: document.getElementById('pmm_character_fact_veto'),
-						globalEntityIncludeMentions: document.getElementById('pmm_global_entity_include_mentions'),
+						autoClassifyNewEntries: document.getElementById('pmm_auto_classify_new_entries'),
+						strictPrefixReviewMode: document.getElementById('pmm_strict_prefix_review_mode'),
+						allowNonPrefixAutoMatch: document.getElementById('pmm_allow_non_prefix_auto_match'),
 						organizationMinScore: document.getElementById('pmm_org_min_score'),
 						locationMinScore: document.getElementById('pmm_location_min_score'),
 						technologyMinScore: document.getElementById('pmm_technology_min_score'),
@@ -770,7 +863,7 @@ class PMM_Admin {
 					forms.forEach(function (form) {
 						form.addEventListener('submit', function () {
 							upsertHidden(form, 'pmm_mode', source.mode ? source.mode.value : 'balanced');
-							upsertHidden(form, 'pmm_format', source.format ? source.format.value : 'md');
+							upsertHidden(form, 'pmm_format', source.format ? source.format.value : 'txt');
 							upsertHidden(form, 'pmm_drop_sequences', source.dropSequences ? source.dropSequences.value : '');
 							upsertHidden(form, 'pmm_include_entity_report', '1');
 							upsertHidden(form, 'pmm_entity_related_match_mode', source.entityRelatedMatchMode ? source.entityRelatedMatchMode.value : 'normal');
@@ -782,8 +875,10 @@ class PMM_Admin {
 							upsertHidden(form, 'pmm_rescan_sections', source.rescanSections && source.rescanSections.checked ? '1' : '0');
 							upsertHidden(form, 'pmm_rescan_confidence', source.rescanConfidence ? source.rescanConfidence.value : '84');
 							upsertHidden(form, 'pmm_rescan_preview_only', source.rescanPreviewOnly && source.rescanPreviewOnly.checked ? '1' : '0');
+							upsertHidden(form, 'pmm_auto_classify_new_entries', source.autoClassifyNewEntries && source.autoClassifyNewEntries.checked ? '1' : '0');
+							upsertHidden(form, 'pmm_strict_prefix_review_mode', source.strictPrefixReviewMode && source.strictPrefixReviewMode.checked ? '1' : '0');
+							upsertHidden(form, 'pmm_allow_non_prefix_auto_match', source.allowNonPrefixAutoMatch && source.allowNonPrefixAutoMatch.checked ? '1' : '0');
 							upsertHidden(form, 'pmm_character_fact_veto', source.characterFactVeto && source.characterFactVeto.checked ? '1' : '0');
-							upsertHidden(form, 'pmm_global_entity_include_mentions', source.globalEntityIncludeMentions && source.globalEntityIncludeMentions.checked ? '1' : '0');
 							upsertHidden(form, 'pmm_org_min_score', source.organizationMinScore ? source.organizationMinScore.value : '2');
 							upsertHidden(form, 'pmm_location_min_score', source.locationMinScore ? source.locationMinScore.value : '2');
 							upsertHidden(form, 'pmm_technology_min_score', source.technologyMinScore ? source.technologyMinScore.value : '2');
@@ -816,7 +911,8 @@ class PMM_Admin {
 
 			<?php if (!empty($data) && !empty($data['cleaned_data']) && is_array($data['cleaned_data'])) : ?>
 				<div class="pmm-card">
-					<h2><?php esc_html_e('Entity Workspace', 'perchance-memory-manager'); ?></h2>
+					<details class="pmm-collapsible-section pmm-collapsible-root">
+						<summary><strong><?php esc_html_e('Entity Workspace', 'perchance-memory-manager'); ?></strong></summary>
 					<p class="description"><?php esc_html_e('Load any entity to view and edit its entries. Replace updates that entity bucket directly in the latest processed output. Delete removes the entity bucket (or section entries when entity is blank for Notes/Relationships/NSFW).', 'perchance-memory-manager'); ?></p>
 
 					<form id="pmm-entity-load-form" method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" style="margin-bottom:10px;">
@@ -831,7 +927,7 @@ class PMM_Admin {
 						</label>
 						<label style="margin-left:8px;"><?php esc_html_e('Entity', 'perchance-memory-manager'); ?>
 							<select id="pmm_edit_entity" name="pmm_edit_entity" class="regular-text">
-								<?php if (in_array($edit_section, ['Notes', 'Relationships', 'NSFW', 'World Building'], true)) : ?>
+								<?php if (in_array($edit_section, ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'], true)) : ?>
 									<option value="" <?php selected($edit_entity, ''); ?>><?php esc_html_e('(Section-level entries)', 'perchance-memory-manager'); ?></option>
 								<?php endif; ?>
 								<?php foreach ($edit_entity_options as $name) : ?>
@@ -852,7 +948,7 @@ class PMM_Admin {
 							var entityName = document.getElementById('pmm_edit_entity_name');
 							var nonceInput = document.getElementById('pmm-entity-ajax-nonce');
 							var nonce = nonceInput ? nonceInput.value : '';
-							var sectionLevelSections = ['Notes', 'Relationships', 'NSFW', 'World Building'];
+							var sectionLevelSections = ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'];
 							if (!section || !entity || !form) {
 								return;
 							}
@@ -1023,7 +1119,7 @@ class PMM_Admin {
 								</label>
 								<label style="margin-left:8px;"><?php esc_html_e('Entity', 'perchance-memory-manager'); ?>
 									<select id="pmm_prune_entity" name="pmm_prune_entity" class="regular-text" style="min-width:220px;">
-										<?php if (in_array($edit_section, ['Notes', 'Relationships', 'NSFW', 'World Building'], true)) : ?>
+										<?php if (in_array($edit_section, ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'], true)) : ?>
 											<option value=""><?php esc_html_e('(Section-level entries)', 'perchance-memory-manager'); ?></option>
 										<?php endif; ?>
 										<?php foreach ($edit_entity_options as $name) : ?>
@@ -1044,6 +1140,12 @@ class PMM_Admin {
 								<label><input type="checkbox" name="pmm_prune_remove_stale" value="1"> <?php esc_html_e('Remove entries likely stale or no longer useful (formerly, deprecated, no longer, TODO/TBD, etc.)', 'perchance-memory-manager'); ?></label>
 							</p>
 							<p>
+								<label><input type="checkbox" name="pmm_prune_remove_unreferenced" value="1"> <?php esc_html_e('Remove entries that do not reference any known entity/character (reviewable in preview)', 'perchance-memory-manager'); ?></label>
+								<label style="margin-left:8px;"><?php esc_html_e('Reference threshold', 'perchance-memory-manager'); ?>
+									<input type="number" name="pmm_prune_unreferenced_threshold" min="0.40" max="0.95" step="0.01" value="0.60" style="width:100px;">
+								</label>
+							</p>
+							<p>
 								<label><input type="checkbox" name="pmm_prune_preview_only" value="1"> <?php esc_html_e('Preview prune report only (no changes saved)', 'perchance-memory-manager'); ?></label>
 							</p>
 							<?php submit_button(__('Run Intelligent Prune', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
@@ -1061,10 +1163,11 @@ class PMM_Admin {
 								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Target: %1$s / %2$s. This is a preview only; run prune again without preview mode to apply changes.', 'perchance-memory-manager'), $preview_section, $preview_target)); ?></p>
 								<ul class="pmm-stats">
 									<li><strong><?php esc_html_e('Before:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['original'] ?? 0))); ?></li>
-									<li><strong><?php esc_html_e('After (estimated):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) (((int) ($preview_stats['original'] ?? 0)) - ((int) ($preview_stats['exact_duplicates'] ?? 0)) - ((int) ($preview_stats['near_duplicates'] ?? 0)) - ((int) ($preview_stats['stale_removed'] ?? 0)) - ((int) ($preview_stats['trimmed'] ?? 0)))); ?></li>
+									<li><strong><?php esc_html_e('After (estimated):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) (((int) ($preview_stats['original'] ?? 0)) - ((int) ($preview_stats['exact_duplicates'] ?? 0)) - ((int) ($preview_stats['near_duplicates'] ?? 0)) - ((int) ($preview_stats['stale_removed'] ?? 0)) - ((int) ($preview_stats['unreferenced_removed'] ?? 0)) - ((int) ($preview_stats['trimmed'] ?? 0)))); ?></li>
 									<li><strong><?php esc_html_e('Exact duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['exact_duplicates'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Near duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['near_duplicates'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Stale candidates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['stale_removed'] ?? 0))); ?></li>
+									<li><strong><?php esc_html_e('Unreferenced candidates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['unreferenced_removed'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Critical entries preserved:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['critical_preserved'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Trimmed to cap:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['trimmed'] ?? 0))); ?></li>
 								</ul>
@@ -1074,6 +1177,7 @@ class PMM_Admin {
 									'exact_duplicates' => __('Sample exact duplicates to remove', 'perchance-memory-manager'),
 									'near_duplicates' => __('Sample near duplicates to remove', 'perchance-memory-manager'),
 									'stale_removed' => __('Sample stale candidates to remove', 'perchance-memory-manager'),
+									'unreferenced_removed' => __('Sample unreferenced candidates to remove', 'perchance-memory-manager'),
 									'trimmed' => __('Sample entries trimmed by cap', 'perchance-memory-manager'),
 								];
 								foreach ($preview_groups as $group_key => $group_label) :
@@ -1104,7 +1208,7 @@ class PMM_Admin {
 								}
 
 								function renderOptions(selectedSection, names) {
-									var sectionLevel = ['Notes', 'Relationships', 'NSFW', 'World Building'];
+									var sectionLevel = ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'];
 									var previous = entity.value || '';
 									entity.innerHTML = '';
 									if (sectionLevel.indexOf(selectedSection) !== -1) {
@@ -1140,243 +1244,256 @@ class PMM_Admin {
 								});
 							})();
 						</script>
+					</details>
 				</div>
 			<?php endif; ?>
 
 			<?php if (!empty($data) && !empty($data['cleaned_data']) && is_array($data['cleaned_data'])) : ?>
 				<div class="pmm-card">
-					<h2><?php esc_html_e('Global Entity Report', 'perchance-memory-manager'); ?></h2>
-					<p class="description"><?php esc_html_e('Review all matching entries for a selected entity across sections. This view is paged and saves changed rows only to avoid form truncation on large datasets.', 'perchance-memory-manager'); ?></p>
+					<details class="pmm-collapsible-section" <?php echo $entry_convert_load ? 'open' : ''; ?>>
+						<summary><strong><?php esc_html_e('Entry Conversion Tool', 'perchance-memory-manager'); ?></strong></summary>
+						<p class="description"><?php esc_html_e('Move or rewrite individual entries across sections/entities with paging to avoid form truncation. Section-level targets (Notes, NSFW, Relationships, World Building) are handled automatically. Enable global entity search to include mention matches when filtering by entity.', 'perchance-memory-manager'); ?></p>
 
 					<form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" style="margin-bottom:10px;">
 						<input type="hidden" name="page" value="perchance-memory-manager">
-						<label><?php esc_html_e('Entity', 'perchance-memory-manager'); ?>
-							<select name="pmm_global_entity_name" class="regular-text" style="min-width:240px;">
-								<option value=""><?php esc_html_e('(select entity)', 'perchance-memory-manager'); ?></option>
-								<?php foreach ($preview_entities as $name) : ?>
-									<option value="<?php echo esc_attr($name); ?>" <?php selected($global_entity_name, $name); ?>><?php echo esc_html($name); ?></option>
+						<label><?php esc_html_e('Source section', 'perchance-memory-manager'); ?>
+							<select name="pmm_entry_convert_section" class="regular-text" style="min-width:220px;">
+								<?php foreach ($entry_convert_section_options as $sec_value => $sec_label) : ?>
+									<option value="<?php echo esc_attr((string) $sec_value); ?>" <?php selected($entry_convert_section, (string) $sec_value); ?>><?php echo esc_html((string) $sec_label); ?></option>
 								<?php endforeach; ?>
 							</select>
+						</label>
+						<label style="margin-left:8px;"><?php esc_html_e('Source entity', 'perchance-memory-manager'); ?>
+							<select name="pmm_entry_convert_entity" class="regular-text" style="min-width:220px;">
+								<option value=""><?php esc_html_e('(all entities + section-level)', 'perchance-memory-manager'); ?></option>
+								<?php foreach ($entry_convert_entity_options as $entity_name_opt) : ?>
+									<option value="<?php echo esc_attr((string) $entity_name_opt); ?>" <?php selected($entry_convert_entity, (string) $entity_name_opt); ?>><?php echo esc_html((string) $entity_name_opt); ?></option>
+								<?php endforeach; ?>
+							</select>
+						</label>
+						<label style="margin-left:8px;"><?php esc_html_e('Contains text', 'perchance-memory-manager'); ?>
+							<input type="text" name="pmm_entry_convert_search" value="<?php echo esc_attr($entry_convert_search); ?>" class="regular-text" placeholder="<?php echo esc_attr__('optional filter', 'perchance-memory-manager'); ?>">
+						</label>
+						<label style="margin-left:8px;">
+							<input type="hidden" name="pmm_entry_convert_include_mentions" value="0">
+							<input type="checkbox" name="pmm_entry_convert_include_mentions" value="1" <?php checked($entry_convert_include_mentions); ?>>
+							<?php esc_html_e('Global entity search (include mention matches)', 'perchance-memory-manager'); ?>
 						</label>
 						<label style="margin-left:8px;"><?php esc_html_e('Rows per page', 'perchance-memory-manager'); ?>
-							<select name="pmm_global_entity_per_page">
+							<select name="pmm_entry_convert_per_page">
 								<?php foreach ([25, 50, 100] as $opt) : ?>
-									<option value="<?php echo esc_attr((string) $opt); ?>" <?php selected($global_entity_per_page, $opt); ?>><?php echo esc_html((string) $opt); ?></option>
+									<option value="<?php echo esc_attr((string) $opt); ?>" <?php selected($entry_convert_per_page, $opt); ?>><?php echo esc_html((string) $opt); ?></option>
 								<?php endforeach; ?>
 							</select>
 						</label>
-						<input type="hidden" name="pmm_global_entity_page" value="1">
-						<?php submit_button(__('Load Report', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-left:8px;']); ?>
+						<input type="hidden" name="pmm_entry_convert_load" value="1">
+						<input type="hidden" name="pmm_entry_convert_page" value="1">
+						<?php submit_button(__('Load Entries', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-left:8px;']); ?>
 					</form>
 
-					<?php if ($global_entity_name !== '') : ?>
-						<p><strong><?php echo esc_html(sprintf(__('Selected entity: %s', 'perchance-memory-manager'), $global_entity_name)); ?></strong></p>
-						<p class="description"><?php echo esc_html(sprintf(__('Showing %1$d rows on this page out of %2$d total matches.', 'perchance-memory-manager'), count($global_entity_rows), $global_entity_total)); ?></p>
+					<?php if ($entry_convert_load) : ?>
+						<p class="description"><?php echo esc_html(sprintf(__('Showing %1$d rows on this page out of %2$d matches.', 'perchance-memory-manager'), count($entry_convert_rows), $entry_convert_total)); ?></p>
+					<?php else : ?>
+						<p class="description"><?php esc_html_e('Choose filters and click Load Entries to populate this conversion table.', 'perchance-memory-manager'); ?></p>
+					<?php endif; ?>
 
-						<?php if (empty($global_entity_rows)) : ?>
-							<p><?php esc_html_e('No entries matched this entity in the current output.', 'perchance-memory-manager'); ?></p>
-						<?php else : ?>
-							<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="pmm-global-entity-report-form">
-								<?php wp_nonce_field('pmm_save_global_entity_report'); ?>
-								<input type="hidden" name="action" value="pmm_save_global_entity_report">
-								<input type="hidden" name="pmm_global_entity_name" value="<?php echo esc_attr($global_entity_name); ?>">
-								<input type="hidden" name="pmm_global_entity_page" value="<?php echo esc_attr((string) $global_entity_page); ?>">
-								<input type="hidden" name="pmm_global_entity_per_page" value="<?php echo esc_attr((string) $global_entity_per_page); ?>">
-								<input type="hidden" name="pmm_global_snapshot" value="<?php echo esc_attr($global_entity_snapshot); ?>">
-								<textarea name="pmm_global_rows_json" id="pmm_global_rows_json" style="display:none;"></textarea>
+					<?php if ($entry_convert_load && !empty($entry_convert_rows)) : ?>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="pmm-entry-convert-form">
+							<?php wp_nonce_field('pmm_save_global_entity_report'); ?>
+							<input type="hidden" name="action" value="pmm_save_global_entity_report">
+							<input type="hidden" name="pmm_entry_convert_mode" value="1">
+							<input type="hidden" name="pmm_entry_convert_section" value="<?php echo esc_attr($entry_convert_section); ?>">
+							<input type="hidden" name="pmm_entry_convert_entity" value="<?php echo esc_attr($entry_convert_entity); ?>">
+							<input type="hidden" name="pmm_entry_convert_search" value="<?php echo esc_attr($entry_convert_search); ?>">
+							<input type="hidden" name="pmm_entry_convert_include_mentions" value="<?php echo esc_attr($entry_convert_include_mentions ? '1' : '0'); ?>">
+							<input type="hidden" name="pmm_entry_convert_load" value="1">
+							<input type="hidden" name="pmm_entry_convert_page" value="<?php echo esc_attr((string) $entry_convert_page); ?>">
+							<input type="hidden" name="pmm_entry_convert_per_page" value="<?php echo esc_attr((string) $entry_convert_per_page); ?>">
+							<input type="hidden" name="pmm_global_snapshot" value="<?php echo esc_attr($entry_convert_snapshot); ?>">
+							<textarea name="pmm_global_rows_json" id="pmm_entry_convert_rows_json" style="display:none;"></textarea>
 
-								<table class="widefat striped" style="margin-top:8px;table-layout:fixed;width:100%;">
-									<thead>
-										<tr>
-											<th style="width:18%;"><?php esc_html_e('Source', 'perchance-memory-manager'); ?></th>
-											<th style="width:40%;"><?php esc_html_e('Entry', 'perchance-memory-manager'); ?></th>
-											<th style="width:16%;"><?php esc_html_e('Target Section', 'perchance-memory-manager'); ?></th>
-											<th style="width:18%;"><?php esc_html_e('Target Entity', 'perchance-memory-manager'); ?></th>
-											<th style="width:8%;"><?php esc_html_e('Action', 'perchance-memory-manager'); ?></th>
+							<table class="widefat striped" style="margin-top:8px;table-layout:fixed;width:100%;">
+								<thead>
+									<tr>
+										<th style="width:22%;"><?php esc_html_e('Source', 'perchance-memory-manager'); ?></th>
+										<th style="width:38%;"><?php esc_html_e('Entry', 'perchance-memory-manager'); ?></th>
+										<th style="width:16%;"><?php esc_html_e('Target Section', 'perchance-memory-manager'); ?></th>
+										<th style="width:16%;"><?php esc_html_e('Target Entity', 'perchance-memory-manager'); ?></th>
+										<th style="width:8%;"><?php esc_html_e('Action', 'perchance-memory-manager'); ?></th>
+									</tr>
+								</thead>
+								<tbody>
+									<?php foreach ($entry_convert_rows as $row) : ?>
+										<tr class="pmm-entry-convert-row"
+											data-source-section="<?php echo esc_attr($row['source_section']); ?>"
+											data-source-entity="<?php echo esc_attr($row['source_entity']); ?>"
+											data-source-entry="<?php echo esc_attr($row['entry']); ?>">
+											<td>
+												<strong><?php echo esc_html((string) $row['source_section']); ?></strong><br>
+												<span class="description"><?php echo esc_html((string) ($row['source_entity'] !== '' ? $row['source_entity'] : __('(section-level)', 'perchance-memory-manager'))); ?></span>
+											</td>
+											<td><textarea class="large-text code pmm-entry-convert-entry" rows="3" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;"><?php echo esc_textarea($row['entry']); ?></textarea></td>
+											<td>
+												<select class="pmm-entry-convert-target-section" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;">
+													<?php foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes', 'New Entries'] as $sec) : ?>
+														<option value="<?php echo esc_attr($sec); ?>" <?php selected($row['source_section'], $sec); ?>><?php echo esc_html($sec); ?></option>
+													<?php endforeach; ?>
+												</select>
+											</td>
+											<td>
+												<select class="pmm-entry-convert-target-entity" data-default-entity="<?php echo esc_attr($row['source_entity']); ?>" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;"></select>
+											</td>
+											<td>
+												<select class="pmm-entry-convert-action" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;">
+													<option value="keep"><?php esc_html_e('Keep', 'perchance-memory-manager'); ?></option>
+													<option value="move"><?php esc_html_e('Move / Update', 'perchance-memory-manager'); ?></option>
+													<option value="remove"><?php esc_html_e('Remove', 'perchance-memory-manager'); ?></option>
+												</select>
+											</td>
 										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ($global_entity_rows as $row) : ?>
-											<tr class="pmm-global-row"
-												data-source-section="<?php echo esc_attr($row['source_section']); ?>"
-												data-source-entity="<?php echo esc_attr($row['source_entity']); ?>"
-												data-source-entry="<?php echo esc_attr($row['entry']); ?>">
-												<td>
-													<strong><?php echo esc_html((string) $row['source_section']); ?></strong><br>
-													<span class="description"><?php echo esc_html((string) ($row['source_entity'] !== '' ? $row['source_entity'] : __('(section-level)', 'perchance-memory-manager'))); ?></span>
-												</td>
-												<td>
-													<textarea class="large-text code pmm-global-entry" rows="3" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;"><?php echo esc_textarea($row['entry']); ?></textarea>
-												</td>
-												<td>
-													<select class="pmm-global-target-section" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;">
-														<?php foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'] as $sec) : ?>
-															<option value="<?php echo esc_attr($sec); ?>" <?php selected($row['source_section'], $sec); ?>><?php echo esc_html($sec); ?></option>
-														<?php endforeach; ?>
-													</select>
-												</td>
-												<td>
-													<select class="pmm-global-target-entity" data-default-entity="<?php echo esc_attr($row['source_entity']); ?>" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;">
-														<?php
-														$row_section = (string) $row['source_section'];
-														$row_entities = isset($global_entity_section_options[$row_section]) && is_array($global_entity_section_options[$row_section]) ? $global_entity_section_options[$row_section] : [];
-														$is_section_level = in_array($row_section, ['Notes', 'Relationships', 'NSFW', 'World Building'], true);
-														if ($is_section_level) :
-														?>
-															<option value=""><?php esc_html_e('(Section-level entries)', 'perchance-memory-manager'); ?></option>
-														<?php endif; ?>
-														<?php foreach ($row_entities as $entity_opt) : ?>
-															<option value="<?php echo esc_attr($entity_opt); ?>" <?php selected((string) $row['source_entity'], (string) $entity_opt); ?>><?php echo esc_html((string) $entity_opt); ?></option>
-														<?php endforeach; ?>
-													</select>
-												</td>
-												<td>
-													<select class="pmm-global-action" style="width:100%;max-width:100%;min-width:0;box-sizing:border-box;">
-														<option value="keep"><?php esc_html_e('Keep', 'perchance-memory-manager'); ?></option>
-														<option value="move"><?php esc_html_e('Move / Update', 'perchance-memory-manager'); ?></option>
-														<option value="remove"><?php esc_html_e('Remove', 'perchance-memory-manager'); ?></option>
-													</select>
-												</td>
-											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
+									<?php endforeach; ?>
+								</tbody>
+							</table>
 
-								<?php submit_button(__('Save Global Entity Report Changes', 'perchance-memory-manager'), 'primary', 'submit', false); ?>
-							</form>
+							<?php submit_button(__('Apply Entry Conversion Changes', 'perchance-memory-manager'), 'primary', 'submit', false); ?>
+						</form>
 
-							<script>
-							(function () {
-								var form = document.getElementById('pmm-global-entity-report-form');
-								if (!form) {
+						<script>
+						(function () {
+							var form = document.getElementById('pmm-entry-convert-form');
+							if (!form) {
+								return;
+							}
+
+							var rowsJson = document.getElementById('pmm_entry_convert_rows_json');
+							var sectionLevel = ['Notes', 'Relationships', 'NSFW', 'World Building', 'New Entries'];
+							var sectionEntityMap = <?php echo wp_json_encode($global_entity_section_options); ?>;
+
+							function repopulateTargetEntity(row, selectedSection) {
+								var targetEntityEl = row.querySelector('.pmm-entry-convert-target-entity');
+								if (!targetEntityEl) {
 									return;
 								}
 
-								var rowsJson = document.getElementById('pmm_global_rows_json');
-								var sectionLevel = ['Notes', 'Relationships', 'NSFW', 'World Building'];
-								var sectionEntityMap = <?php echo wp_json_encode($global_entity_section_options); ?>;
+								var previous = targetEntityEl.value || targetEntityEl.getAttribute('data-default-entity') || '';
+								var options = Array.isArray(sectionEntityMap[selectedSection]) ? sectionEntityMap[selectedSection] : [];
+								targetEntityEl.innerHTML = '';
 
-								function repopulateTargetEntity(row, selectedSection) {
-									var targetEntityEl = row.querySelector('.pmm-global-target-entity');
-									if (!targetEntityEl) {
-										return;
-									}
-
-									var previous = targetEntityEl.value || targetEntityEl.getAttribute('data-default-entity') || '';
-									var options = Array.isArray(sectionEntityMap[selectedSection]) ? sectionEntityMap[selectedSection] : [];
-									targetEntityEl.innerHTML = '';
-
-									if (sectionLevel.indexOf(selectedSection) !== -1) {
-										var sectionOption = document.createElement('option');
-										sectionOption.value = '';
-										sectionOption.textContent = '(Section-level entries)';
-										targetEntityEl.appendChild(sectionOption);
-									}
-
-									options.forEach(function (name) {
-										var option = document.createElement('option');
-										option.value = name;
-										option.textContent = name;
-										targetEntityEl.appendChild(option);
-									});
-
-									if (previous && options.indexOf(previous) !== -1) {
-										targetEntityEl.value = previous;
-									} else if (sectionLevel.indexOf(selectedSection) !== -1) {
-										targetEntityEl.value = '';
-									} else if (options.length > 0) {
-										targetEntityEl.value = options[0];
-									}
+								if (sectionLevel.indexOf(selectedSection) !== -1) {
+									var sectionOption = document.createElement('option');
+									sectionOption.value = '';
+									sectionOption.textContent = '(Section-level entries)';
+									targetEntityEl.appendChild(sectionOption);
 								}
 
-								form.querySelectorAll('tr.pmm-global-row').forEach(function (row) {
-									var targetSectionEl = row.querySelector('.pmm-global-target-section');
-									if (!targetSectionEl) {
+								options.forEach(function (name) {
+									var option = document.createElement('option');
+									option.value = name;
+									option.textContent = name;
+									targetEntityEl.appendChild(option);
+								});
+
+								if (previous && options.indexOf(previous) !== -1) {
+									targetEntityEl.value = previous;
+								} else if (sectionLevel.indexOf(selectedSection) !== -1) {
+									targetEntityEl.value = '';
+								} else if (options.length > 0) {
+									targetEntityEl.value = options[0];
+								}
+							}
+
+							form.querySelectorAll('tr.pmm-entry-convert-row').forEach(function (row) {
+								var targetSectionEl = row.querySelector('.pmm-entry-convert-target-section');
+								if (!targetSectionEl) {
+									return;
+								}
+
+								repopulateTargetEntity(row, targetSectionEl.value || row.getAttribute('data-source-section') || 'Characters');
+								targetSectionEl.addEventListener('change', function () {
+									repopulateTargetEntity(row, targetSectionEl.value || 'Characters');
+								});
+							});
+
+							form.addEventListener('submit', function () {
+								var changedRows = [];
+								form.querySelectorAll('tr.pmm-entry-convert-row').forEach(function (row) {
+									var sourceSection = row.getAttribute('data-source-section') || '';
+									var sourceEntity = row.getAttribute('data-source-entity') || '';
+									var sourceEntry = row.getAttribute('data-source-entry') || '';
+									var targetSectionEl = row.querySelector('.pmm-entry-convert-target-section');
+									var targetEntityEl = row.querySelector('.pmm-entry-convert-target-entity');
+									var entryEl = row.querySelector('.pmm-entry-convert-entry');
+									var actionEl = row.querySelector('.pmm-entry-convert-action');
+
+									if (!targetSectionEl || !targetEntityEl || !entryEl || !actionEl) {
 										return;
 									}
 
-									repopulateTargetEntity(row, targetSectionEl.value || row.getAttribute('data-source-section') || 'Characters');
-									targetSectionEl.addEventListener('change', function () {
-										repopulateTargetEntity(row, targetSectionEl.value || 'Characters');
+									var targetSection = targetSectionEl.value || sourceSection;
+									var targetEntity = targetEntityEl.value || sourceEntity;
+									if (sectionLevel.indexOf(targetSection) !== -1) {
+										targetEntity = '';
+									}
+									var entry = (entryEl.value || '').trim();
+									if (!entry) {
+										entry = sourceEntry;
+									}
+									var action = actionEl.value || 'keep';
+
+									var changed = action !== 'keep'
+										|| targetSection !== sourceSection
+										|| targetEntity !== sourceEntity
+										|| entry !== sourceEntry;
+
+									if (!changed) {
+										return;
+									}
+
+									if (action === 'keep') {
+										action = 'move';
+									}
+
+									changedRows.push({
+										source_section: sourceSection,
+										source_entity: sourceEntity,
+										source_entry: sourceEntry,
+										target_section: targetSection,
+										target_entity: targetEntity,
+										entry: entry,
+										action: action
 									});
 								});
 
-								form.addEventListener('submit', function () {
-									var changedRows = [];
-									form.querySelectorAll('tr.pmm-global-row').forEach(function (row) {
-										var sourceSection = row.getAttribute('data-source-section') || '';
-										var sourceEntity = row.getAttribute('data-source-entity') || '';
-										var sourceEntry = row.getAttribute('data-source-entry') || '';
-										var targetSectionEl = row.querySelector('.pmm-global-target-section');
-										var targetEntityEl = row.querySelector('.pmm-global-target-entity');
-										var entryEl = row.querySelector('.pmm-global-entry');
-										var actionEl = row.querySelector('.pmm-global-action');
+								rowsJson.value = JSON.stringify(changedRows);
+							});
+						})();
+						</script>
 
-										if (!targetSectionEl || !targetEntityEl || !entryEl || !actionEl) {
-											return;
-										}
-
-										var targetSection = targetSectionEl.value || sourceSection;
-										var targetEntity = targetEntityEl.value || sourceEntity;
-										if (sectionLevel.indexOf(targetSection) !== -1) {
-											targetEntity = '';
-										}
-										var entry = (entryEl.value || '').trim();
-										if (!entry) {
-											entry = sourceEntry;
-										}
-										var action = actionEl.value || 'keep';
-
-										var changed = action !== 'keep'
-											|| targetSection !== sourceSection
-											|| targetEntity !== sourceEntity
-											|| entry !== sourceEntry;
-
-										if (!changed) {
-											return;
-										}
-
-										if (action === 'keep') {
-											action = 'move';
-										}
-
-										changedRows.push({
-											source_section: sourceSection,
-											source_entity: sourceEntity,
-											source_entry: sourceEntry,
-											target_section: targetSection,
-											target_entity: targetEntity,
-											entry: entry,
-											action: action
-										});
-									});
-
-									rowsJson.value = JSON.stringify(changedRows);
-								});
-							})();
-							</script>
-
-							<?php if ($global_entity_total_pages > 1) : ?>
-								<p style="margin-top:10px;">
-									<?php for ($p = 1; $p <= $global_entity_total_pages; $p++) : ?>
-										<?php
-										$url = add_query_arg([
-											'page' => 'perchance-memory-manager',
-											'pmm_global_entity_name' => $global_entity_name,
-											'pmm_global_entity_per_page' => $global_entity_per_page,
-											'pmm_global_entity_page' => $p,
-										], admin_url('admin.php'));
-										?>
-										<a class="button <?php echo $p === $global_entity_page ? 'button-primary' : ''; ?>" href="<?php echo esc_url($url); ?>" style="margin-right:4px;margin-bottom:4px;"><?php echo esc_html((string) $p); ?></a>
-									<?php endfor; ?>
-								</p>
-							<?php endif; ?>
+						<?php if ($entry_convert_total_pages > 1) : ?>
+							<p style="margin-top:10px;">
+								<?php for ($p = 1; $p <= $entry_convert_total_pages; $p++) : ?>
+									<?php
+									$url = add_query_arg([
+										'page' => 'perchance-memory-manager',
+										'pmm_entry_convert_section' => $entry_convert_section,
+										'pmm_entry_convert_entity' => $entry_convert_entity,
+										'pmm_entry_convert_search' => $entry_convert_search,
+										'pmm_entry_convert_include_mentions' => $entry_convert_include_mentions ? 1 : 0,
+										'pmm_entry_convert_load' => 1,
+										'pmm_entry_convert_per_page' => $entry_convert_per_page,
+										'pmm_entry_convert_page' => $p,
+									], admin_url('admin.php'));
+									?>
+									<a class="button <?php echo $p === $entry_convert_page ? 'button-primary' : ''; ?>" href="<?php echo esc_url($url); ?>" style="margin-right:4px;margin-bottom:4px;"><?php echo esc_html((string) $p); ?></a>
+								<?php endfor; ?>
+							</p>
 						<?php endif; ?>
+					<?php elseif ($entry_convert_load) : ?>
+						<p><?php esc_html_e('No entries matched the selected conversion filters.', 'perchance-memory-manager'); ?></p>
 					<?php endif; ?>
+					</details>
 				</div>
-			<?php endif; ?>
 
-			<?php if (!empty($data) && !empty($data['cleaned_data']) && is_array($data['cleaned_data'])) : ?>
 				<div class="pmm-card">
 					<h2><?php esc_html_e('Global Search & Replace', 'perchance-memory-manager'); ?></h2>
 					<p class="description"><?php esc_html_e('Search across the current output and replace matches safely. If multiple entities in the same section end up with the same name, their entries are merged instead of lost.', 'perchance-memory-manager'); ?></p>
@@ -1412,7 +1529,71 @@ class PMM_Admin {
 			<?php endif; ?>
 
 			<div class="pmm-card">
-				<h2><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></h2>
+				<details class="pmm-collapsible-section">
+					<summary><strong><?php esc_html_e('Known Sections and Confirmed Entities', 'perchance-memory-manager'); ?></strong></summary>
+					<p><?php esc_html_e('This registry is built from processed output over time and is reused as a seed during raw import suggestions.', 'perchance-memory-manager'); ?></p>
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;">
+					<?php wp_nonce_field('pmm_import_confirmed_entities'); ?>
+					<input type="hidden" name="action" value="pmm_import_confirmed_entities">
+					<p>
+						<label><?php esc_html_e('Target section', 'perchance-memory-manager'); ?>
+							<select name="pmm_confirmed_section" style="margin-left:6px;">
+								<?php foreach ($this->entity_sections() as $entity_section) : ?>
+									<option value="<?php echo esc_attr($entity_section); ?>"><?php echo esc_html($entity_section); ?></option>
+								<?php endforeach; ?>
+							</select>
+						</label>
+					</p>
+					<textarea name="pmm_confirmed_entities_text" rows="6" class="large-text code" placeholder="Echo-7&#10;Black Max&#10;Eva Thorne"></textarea>
+					<p class="description" style="margin-top:8px;"><?php esc_html_e('One entity name per line. This bulk-imports confirmed entities into the selected section and strengthens exact-leading-name routing.', 'perchance-memory-manager'); ?></p>
+					<?php submit_button(__('Bulk Import Confirmed Entities', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+					</form>
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;">
+					<?php wp_nonce_field('pmm_save_confirmed_entities_section'); ?>
+					<input type="hidden" name="action" value="pmm_save_confirmed_entities_section">
+					<p>
+						<label><?php esc_html_e('Review/Edit section list', 'perchance-memory-manager'); ?>
+							<select id="pmm_confirmed_edit_section" name="pmm_confirmed_edit_section" style="margin-left:6px;">
+								<?php foreach ($this->entity_sections() as $entity_section) : ?>
+									<option value="<?php echo esc_attr($entity_section); ?>" <?php selected($confirmed_edit_section, $entity_section); ?>><?php echo esc_html($entity_section); ?></option>
+								<?php endforeach; ?>
+							</select>
+						</label>
+					</p>
+					<textarea id="pmm_confirmed_edit_entities_text" name="pmm_confirmed_edit_entities_text" rows="8" class="large-text code"><?php echo esc_textarea(isset($confirmed_section_text_map[$confirmed_edit_section]) ? (string) $confirmed_section_text_map[$confirmed_edit_section] : ''); ?></textarea>
+					<p class="description" style="margin-top:8px;"><?php esc_html_e('One entity name per line. Saving replaces that section list. You can remove, rename, or reorder entries before saving.', 'perchance-memory-manager'); ?></p>
+					<?php submit_button(__('Save Edited Section List', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+					</form>
+					<script>
+					document.addEventListener('DOMContentLoaded', function () {
+						var sectionSelect = document.getElementById('pmm_confirmed_edit_section');
+						var textArea = document.getElementById('pmm_confirmed_edit_entities_text');
+						if (!sectionSelect || !textArea) {
+							return;
+						}
+						var sectionMap = <?php echo wp_json_encode($confirmed_section_text_map); ?>;
+						sectionSelect.addEventListener('change', function () {
+							textArea.value = sectionMap[sectionSelect.value] || '';
+						});
+					});
+					</script>
+					<ul>
+					<?php foreach ($this->entity_sections() as $entity_section) : ?>
+						<?php $count = isset($confirmed_registry[$entity_section]) && is_array($confirmed_registry[$entity_section]) ? count($confirmed_registry[$entity_section]) : 0; ?>
+						<li><?php echo esc_html($entity_section . ': ' . $count); ?></li>
+					<?php endforeach; ?>
+					<li><?php esc_html_e('World Building (section-level)', 'perchance-memory-manager'); ?></li>
+					<li><?php esc_html_e('Relationships (section-level)', 'perchance-memory-manager'); ?></li>
+					<li><?php esc_html_e('NSFW (section-level)', 'perchance-memory-manager'); ?></li>
+					<li><?php esc_html_e('Notes (section-level)', 'perchance-memory-manager'); ?></li>
+					</ul>
+					<?php $this->render_confirmed_entity_registry_table($confirmed_registry); ?>
+				</details>
+			</div>
+
+			<div class="pmm-card">
+				<details class="pmm-collapsible-section pmm-collapsible-root">
+					<summary><strong><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></strong></summary>
 				<p><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
 				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
 					<?php wp_nonce_field('pmm_preview_raw_import'); ?>
@@ -1423,19 +1604,59 @@ class PMM_Admin {
 				</form>
 
 				<?php if (!empty($raw_preview_rows) || !empty($staged_raw_rows)) : ?>
+					<?php if (!empty($raw_preview_rows)) : ?>
+						<p class="description" style="margin-top:10px;">
+							<?php echo esc_html(sprintf(__('Preview confidence mix: %1$d high (>=85), %2$d medium (60-84), %3$d low (<60). Use confidence staging to avoid reviewing every row manually.', 'perchance-memory-manager'), $raw_preview_high_conf, $raw_preview_medium_conf, $raw_preview_low_conf)); ?>
+						</p>
+						<?php if ($raw_stage_mode_notice !== '') : ?>
+							<p class="description" style="margin-top:6px;"><strong><?php esc_html_e('Last confidence staging mode:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html(str_replace('_', ' ', $raw_stage_mode_notice)); ?> (<?php echo esc_html((string) $raw_confidence_threshold); ?>)</p>
+						<?php endif; ?>
+					<?php endif; ?>
 					<p class="description" style="margin-top:10px;"><?php esc_html_e('Editable staging format: Section<TAB>Entity<TAB>Entry text. Leave Entity blank to append to section-level entries like Notes/Relationships/NSFW.', 'perchance-memory-manager'); ?></p>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data" id="pmm-raw-stage-form" data-pmm-raw-table-complete="<?php echo esc_attr(!empty($raw_preview_rows) && count($raw_preview_rows) <= $raw_preview_limit ? '1' : '0'); ?>">
+					<?php if (!empty($raw_preview_rows)) : ?>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+							<?php wp_nonce_field('pmm_stage_raw_import'); ?>
+							<input type="hidden" name="action" value="pmm_stage_raw_import">
+							<label>
+								<?php esc_html_e('Confidence threshold', 'perchance-memory-manager'); ?><br>
+								<input type="number" name="pmm_raw_confidence_threshold" min="1" max="99" value="<?php echo esc_attr((string) $raw_confidence_threshold); ?>" style="width:100px;">
+							</label>
+							<label>
+								<?php esc_html_e('Bulk stage mode', 'perchance-memory-manager'); ?><br>
+								<select name="pmm_raw_stage_mode">
+									<option value="all_preview_rows"><?php esc_html_e('Stage all preview rows', 'perchance-memory-manager'); ?></option>
+									<option value="high_confidence_only"><?php esc_html_e('Stage high-confidence rows only (>= threshold)', 'perchance-memory-manager'); ?></option>
+									<option value="low_confidence_only"><?php esc_html_e('Stage low-confidence review queue only (< threshold)', 'perchance-memory-manager'); ?></option>
+								</select>
+							</label>
+							<?php submit_button(__('Stage From Preview Confidence Filter', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+						</form>
+					<?php endif; ?>
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data" id="pmm-raw-stage-form" data-pmm-raw-table-complete="1">
 						<?php wp_nonce_field('pmm_stage_raw_import'); ?>
 						<input type="hidden" name="action" value="pmm_stage_raw_import">
+						<input type="hidden" name="pmm_raw_stage_mode" value="manual">
 						<p><input type="file" name="pmm_raw_import_rows_file" accept=".tsv,.txt,.csv"> <span class="description"><?php esc_html_e('Optional: upload edited TSV to replace textarea content.', 'perchance-memory-manager'); ?></span></p>
-						<?php if (!empty($raw_preview_rows) && count($raw_preview_rows) <= $raw_preview_limit) : ?>
-							<details style="margin:8px 0 12px 0;">
+						<?php if (!empty($raw_preview_rows)) : ?>
+							<details style="margin:8px 0 12px 0;" open>
 								<summary><strong><?php esc_html_e('Preview Assignments (editable)', 'perchance-memory-manager'); ?></strong></summary>
-								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Showing %1$d of %2$d detected rows. Edit these assignments, then stage the TSV below.', 'perchance-memory-manager'), min($raw_preview_limit, count($raw_preview_rows)), count($raw_preview_rows))); ?></p>
-								<?php $this->render_raw_import_preview_table(array_slice($raw_preview_rows, 0, $raw_preview_limit)); ?>
+								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Showing rows %1$d-%2$d of %3$d. Edit rows, then stage. You can page through the entire review queue.', 'perchance-memory-manager'), ($raw_preview_total > 0 ? $raw_preview_offset + 1 : 0), min($raw_preview_total, $raw_preview_offset + count($raw_preview_rows_page)), $raw_preview_total)); ?></p>
+								<?php
+								$known_entities_by_section = $this->known_entities_for_raw_review($confirmed_registry, isset($data['cleaned_data']) && is_array($data['cleaned_data']) ? $data['cleaned_data'] : []);
+								$this->render_raw_import_preview_table($raw_preview_rows_page, $known_entities_by_section);
+								?>
+								<?php if ($raw_preview_total_pages > 1) : ?>
+									<p style="margin-top:8px;">
+										<?php if ($raw_preview_page > 1) : ?>
+											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page - 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Previous Page', 'perchance-memory-manager'); ?></a>
+										<?php endif; ?>
+										<span class="description" style="margin:0 8px;"><?php echo esc_html(sprintf(__('Page %1$d of %2$d', 'perchance-memory-manager'), $raw_preview_page, $raw_preview_total_pages)); ?></span>
+										<?php if ($raw_preview_page < $raw_preview_total_pages) : ?>
+											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page + 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Next Page', 'perchance-memory-manager'); ?></a>
+										<?php endif; ?>
+									</p>
+								<?php endif; ?>
 							</details>
-						<?php elseif (!empty($raw_preview_rows)) : ?>
-							<p class="description" style="margin:8px 0 12px 0;"><?php echo esc_html(sprintf(__('Detected %d preview rows. The row editor is hidden here so the full staged TSV stays intact; use the textarea below or upload an edited TSV for bulk changes.', 'perchance-memory-manager'), count($raw_preview_rows))); ?></p>
 						<?php endif; ?>
 						<textarea name="pmm_raw_import_rows" rows="14" class="large-text code"><?php echo esc_textarea($staged_raw_rows_text); ?></textarea>
 						<?php submit_button(__('Stage Rows For Next Processing Run', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
@@ -1444,9 +1665,6 @@ class PMM_Admin {
 						document.addEventListener('DOMContentLoaded', function () {
 							var form = document.getElementById('pmm-raw-stage-form');
 							if (!form) {
-								return;
-							}
-							if (form.dataset.pmmRawTableComplete !== '1') {
 								return;
 							}
 							form.addEventListener('submit', function () {
@@ -1489,50 +1707,43 @@ class PMM_Admin {
 				<?php if (!empty($staged_raw_rows)) : ?>
 					<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Currently staged: %d row(s). They will be injected on the next upload or reprocess, then cleared automatically.', 'perchance-memory-manager'), count($staged_raw_rows))); ?></p>
 				<?php endif; ?>
+				</details>
 			</div>
 
 			<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
 				<div class="pmm-card">
-					<details>
+					<details class="pmm-collapsible-section pmm-collapsible-root">
 						<summary><strong><?php esc_html_e('Entity Management Functions', 'perchance-memory-manager'); ?></strong></summary>
-						<div style="margin-top:10px;">
-							<details style="margin:12px 0;">
+						<div class="pmm-collapsible-group" style="margin-top:10px;">
+							<details class="pmm-collapsible-section">
 								<summary><strong><?php esc_html_e('Similar Entity Review', 'perchance-memory-manager'); ?></strong></summary>
 								<div style="margin-top:10px;">
 									<?php $this->render_similarity_review($data['entity_report']['similar_candidates'] ?? [], isset($data['entity_report']['similar_candidates_total_found']) ? (int) $data['entity_report']['similar_candidates_total_found'] : null, !empty($data['entity_report']['similar_candidates_truncated'])); ?>
 								</div>
 							</details>
 
-							<details style="margin:12px 0;">
+							<details class="pmm-collapsible-section">
 								<summary><strong><?php esc_html_e('Questionable Entry Review', 'perchance-memory-manager'); ?></strong></summary>
 								<div style="margin-top:10px;">
 									<?php $this->render_questionable_entry_review($data['entity_report']['questionable_entries'] ?? [], isset($data['entity_report']['questionable_entries_total_found']) ? (int) $data['entity_report']['questionable_entries_total_found'] : null); ?>
 								</div>
 							</details>
 
-							<details style="margin:12px 0;">
+							<details class="pmm-collapsible-section">
 								<summary><strong><?php esc_html_e('Automated Reclassification Review', 'perchance-memory-manager'); ?></strong></summary>
 								<div style="margin-top:10px;">
 									<?php $this->render_reclassification_review($data['entity_report']['reclassification_candidates'] ?? [], isset($data['entity_report']['reclassification_candidates_total_found']) ? (int) $data['entity_report']['reclassification_candidates_total_found'] : null); ?>
 								</div>
 							</details>
 
-							<details style="margin:12px 0;">
-								<summary><strong><?php esc_html_e('Entity Review', 'perchance-memory-manager'); ?></strong></summary>
-								<div style="margin-top:10px;">
-									<?php $this->render_entity_review($data['entity_report']['entities'] ?? []); ?>
-									<?php $this->render_hidden_entities_manager(); ?>
-								</div>
-							</details>
-
-							<details style="margin:12px 0;">
+							<details class="pmm-collapsible-section">
 								<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
 								<div style="margin-top:10px;">
 									<?php $this->render_alias_rules_manager(); ?>
 								</div>
 							</details>
 
-							<details style="margin:12px 0;">
+							<details class="pmm-collapsible-section">
 								<summary><strong><?php esc_html_e('All Entities', 'perchance-memory-manager'); ?></strong></summary>
 								<div style="margin-top:10px;">
 									<?php $this->render_entity_groups($data['entity_report']['entities'] ?? []); ?>
@@ -1545,11 +1756,11 @@ class PMM_Admin {
 
 			<?php if ($has_last_output || !empty($similarity_log)) : ?>
 				<div class="pmm-card">
-					<details>
+					<details class="pmm-collapsible-section pmm-collapsible-root">
 						<summary><strong><?php esc_html_e('Review and Results Hub', 'perchance-memory-manager'); ?></strong></summary>
-						<div style="margin-top:10px;">
+						<div class="pmm-collapsible-group" style="margin-top:10px;">
 							<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
-								<details style="margin:12px 0;">
+								<details class="pmm-collapsible-section">
 									<summary><strong><?php esc_html_e('New Entities Added During Processing', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
 										<?php $this->render_entity_groups($data['entity_report']['new_entities'] ?? []); ?>
@@ -1557,7 +1768,7 @@ class PMM_Admin {
 								</details>
 							<?php endif; ?>
 
-							<details style="margin:12px 0;">
+							<details class="pmm-collapsible-section">
 								<summary><strong><?php esc_html_e('Active Rules Summary', 'perchance-memory-manager'); ?></strong></summary>
 								<div style="margin-top:10px;">
 									<?php $this->render_rules_summary(); ?>
@@ -1565,7 +1776,7 @@ class PMM_Admin {
 							</details>
 
 							<?php if ($has_last_output) : ?>
-								<details style="margin:12px 0;">
+								<details class="pmm-collapsible-section">
 									<summary><strong><?php esc_html_e('Last Processed Result', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
 										<?php $this->render_last_processed_result_summary($data, $rules_dirty, $rescan_sections_enabled, $rescan_confidence, $rescan_preview_only); ?>
@@ -1574,7 +1785,7 @@ class PMM_Admin {
 							<?php endif; ?>
 
 							<?php if (!empty($similarity_log)) : ?>
-								<details style="margin:12px 0;">
+								<details class="pmm-collapsible-section">
 									<summary><strong><?php esc_html_e('Recent Similarity Decisions', 'perchance-memory-manager'); ?></strong></summary>
 									<div style="margin-top:10px;">
 										<?php $this->render_recent_similarity_decisions($similarity_log); ?>
@@ -1692,7 +1903,7 @@ class PMM_Admin {
 											return normalizeSectionName(name) === normalized;
 										}) || trimmed.replace(/^#+\s*/, '').trim();
 										currentSection = matchedSection;
-										currentSectionAllowsEntities = ['Relationships', 'NSFW', 'Notes', 'World Building', 'New Entries'].indexOf(currentSection) === -1;
+										currentSectionAllowsEntities = ['Relationships', 'NSFW', 'Notes', 'World Building', 'Technology / Systems', 'Vehicles / Transportation', 'New Entries'].indexOf(currentSection) === -1;
 										if (!index.entitiesBySection[currentSection]) {
 											index.entitiesBySection[currentSection] = [];
 										}
@@ -2121,7 +2332,7 @@ class PMM_Admin {
 			'entity_update_missing' => __('Could not load latest processed dataset for entity updates. Process a file first.', 'perchance-memory-manager'),
 			'preview_missing' => __('No editable preview content was available to save.', 'perchance-memory-manager'),
 			'global_replace_missing' => __('Global search and replace requires a search term, and renaming entities requires a replacement value.', 'perchance-memory-manager'),
-			'global_entity_stale' => __('Global entity report is stale because output changed since this page was loaded. Reload the report and try again.', 'perchance-memory-manager'),
+			'global_entity_stale' => __('Entry conversion data is stale because output changed since this page was loaded. Reload entries and try again.', 'perchance-memory-manager'),
 		];
 
 		return $messages[$code] ?? __('An unknown error occurred.', 'perchance-memory-manager');
@@ -2428,7 +2639,7 @@ class PMM_Admin {
 		}
 
 		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
-		$section_level = ['Notes', 'Relationships', 'NSFW', 'World Building'];
+		$section_level = ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'];
 		$shown_count = count($candidates);
 		$resolved_total = is_numeric($total_found) ? max(0, (int) $total_found) : $shown_count;
 		if ($resolved_total > $shown_count) {
@@ -2748,8 +2959,8 @@ class PMM_Admin {
 			return '';
 		}
 
-		if (in_array($section, ['Notes', 'Relationships', 'NSFW', 'World Building'], true) && $entity === '') {
-			$items = isset($cleaned_data[$section]['__entries__']) && is_array($cleaned_data[$section]['__entries__']) ? $cleaned_data[$section]['__entries__'] : [];
+		if (in_array($section, ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'], true) && $entity === '') {
+			$items = $this->section_level_items_from_bucket($cleaned_data[$section]);
 			return implode("\n", array_map('strval', $items));
 		}
 
@@ -2769,10 +2980,11 @@ class PMM_Admin {
 
 		$lines = ['# ' . $section];
 
-		if (in_array($section, ['Notes', 'Relationships', 'NSFW', 'World Building'], true) && $entity === '') {
-			$items = isset($cleaned_data[$section]['__entries__']) && is_array($cleaned_data[$section]['__entries__']) ? $cleaned_data[$section]['__entries__'] : [];
+		if (in_array($section, ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'], true) && $entity === '') {
+			$items = $this->section_level_items_from_bucket($cleaned_data[$section]);
 			foreach ($items as $item) {
 				$lines[] = '- ' . (string) $item;
+				$lines[] = '';
 			}
 
 			return implode("\n", $lines);
@@ -2782,6 +2994,7 @@ class PMM_Admin {
 			$lines[] = $entity;
 			foreach ($cleaned_data[$section][$entity] as $item) {
 				$lines[] = '- ' . (string) $item;
+				$lines[] = '';
 			}
 			return implode("\n", $lines);
 		}
@@ -2789,8 +3002,37 @@ class PMM_Admin {
 		return '';
 	}
 
+	private function section_level_items_from_bucket($section_bucket) {
+		if (!is_array($section_bucket)) {
+			return [];
+		}
+
+		$items = [];
+		$reserved = ['__entries__', '__unassigned__'];
+
+		foreach ($reserved as $key) {
+			if (!isset($section_bucket[$key]) || !is_array($section_bucket[$key])) {
+				continue;
+			}
+			foreach ($section_bucket[$key] as $item) {
+				$items[] = (string) $item;
+			}
+		}
+
+		foreach ($section_bucket as $key => $value) {
+			if (in_array((string) $key, $reserved, true) || strpos((string) $key, '__') === 0 || !is_array($value)) {
+				continue;
+			}
+			foreach ($value as $item) {
+				$items[] = (string) $item;
+			}
+		}
+
+		return $items;
+	}
+
 	private function build_fallback_entity_report($cleaned_data) {
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
+		$sections = ['Characters', 'Organizations', 'Locations'];
 		$entities = [];
 
 		foreach ($sections as $section) {
@@ -2821,22 +3063,23 @@ class PMM_Admin {
 		];
 	}
 
-	private function build_global_entity_rows($cleaned_data, $entity_name, $include_mentions = true) {
-		$entity_name = trim((string) $entity_name);
-		if ($entity_name === '') {
-			return [];
-		}
-
-		$target_fp = PMM_Utils::name_fingerprint($entity_name);
-		if ($target_fp === '') {
-			return [];
-		}
+	private function build_entry_conversion_rows($cleaned_data, $filters = []) {
+		$section_filter = isset($filters['section']) ? trim((string) $filters['section']) : 'all';
+		$entity_filter = isset($filters['entity']) ? trim((string) $filters['entity']) : '';
+		$search_filter = isset($filters['search']) ? trim((string) $filters['search']) : '';
+		$include_mentions = !empty($filters['include_mentions']);
+		$search_filter_fp = PMM_Utils::fingerprint($search_filter);
 
 		$rows = [];
 		$index = 0;
+
 		foreach ((array) $cleaned_data as $section => $content) {
 			$section = trim((string) $section);
 			if ($section === '' || !is_array($content)) {
+				continue;
+			}
+
+			if ($section_filter !== 'all' && $section !== $section_filter) {
 				continue;
 			}
 
@@ -2846,7 +3089,6 @@ class PMM_Admin {
 				}
 
 				$entity_name_current = (strpos((string) $entity, '__') === 0) ? '' : trim((string) $entity);
-				$entity_match = ($entity_name_current !== '' && PMM_Utils::name_fingerprint($entity_name_current) === $target_fp);
 
 				foreach ((array) $items as $entry) {
 					$entry = PMM_Utils::normalize_bullet((string) $entry);
@@ -2854,9 +3096,19 @@ class PMM_Admin {
 						continue;
 					}
 
-					$entry_match = $include_mentions ? (PMM_Utils::contains_name_score($entry, $entity_name) >= 0.90) : false;
-					if (!$entity_match && !$entry_match) {
-						continue;
+					if ($entity_filter !== '') {
+						$entity_match = ($entity_name_current === $entity_filter);
+						$mention_match = $include_mentions ? (PMM_Utils::contains_name_score($entry, $entity_filter) >= 0.90) : false;
+						if (!$entity_match && !$mention_match) {
+							continue;
+						}
+					}
+
+					if ($search_filter !== '') {
+						$entry_fp = PMM_Utils::fingerprint($entry);
+						if ($search_filter_fp !== '' && strpos($entry_fp, $search_filter_fp) === false) {
+							continue;
+						}
 					}
 
 					$rows[] = [
@@ -2901,12 +3153,14 @@ class PMM_Admin {
 		return $names;
 	}
 
-	private function render_raw_import_preview_table($rows) {
+	private function render_raw_import_preview_table($rows, $known_entities_by_section = []) {
 		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
 		echo '<table class="widefat striped"><thead><tr>';
 		echo '<th>' . esc_html__('Source', 'perchance-memory-manager') . '</th>';
+		echo '<th>' . esc_html__('Confidence', 'perchance-memory-manager') . '</th>';
+		echo '<th>' . esc_html__('Signal', 'perchance-memory-manager') . '</th>';
 		echo '<th>' . esc_html__('Section', 'perchance-memory-manager') . '</th>';
-		echo '<th>' . esc_html__('Entity', 'perchance-memory-manager') . '</th>';
+		echo '<th>' . esc_html__('Entity Mapping', 'perchance-memory-manager') . '</th>';
 		echo '<th>' . esc_html__('Entry Text', 'perchance-memory-manager') . '</th>';
 		echo '</tr></thead><tbody>';
 
@@ -2915,23 +3169,168 @@ class PMM_Admin {
 			$section = isset($row['section']) ? (string) $row['section'] : 'Notes';
 			$entity = isset($row['entity']) ? (string) $row['entity'] : '';
 			$bullet = isset($row['bullet']) ? (string) $row['bullet'] : '';
+			$confidence = isset($row['confidence']) ? max(1, min(99, (int) $row['confidence'])) : 50;
+			$signal = isset($row['reason']) ? (string) $row['reason'] : '';
 			if (!in_array($section, $valid_sections, true)) {
 				$section = 'Notes';
 			}
 
 			echo '<tr data-pmm-raw-row="1">';
 			echo '<td style="max-width:260px;white-space:pre-wrap;">' . esc_html($source) . '</td>';
-			echo '<td><select name="pmm_raw_table[' . esc_attr((string) $index) . '][section]">';
+			echo '<td><strong>' . esc_html((string) $confidence) . '%</strong></td>';
+			echo '<td style="max-width:200px;white-space:pre-wrap;">' . esc_html($signal) . '</td>';
+			echo '<td><select class="pmm-raw-section" name="pmm_raw_table[' . esc_attr((string) $index) . '][section]">';
 			foreach ($valid_sections as $sec) {
 				echo '<option value="' . esc_attr($sec) . '" ' . selected($section, $sec, false) . '>' . esc_html($sec) . '</option>';
 			}
 			echo '</select></td>';
-			echo '<td><input type="text" class="regular-text" name="pmm_raw_table[' . esc_attr((string) $index) . '][entity]" value="' . esc_attr($entity) . '" placeholder="' . esc_attr__('Optional', 'perchance-memory-manager') . '"></td>';
+			echo '<td>';
+			echo '<select class="pmm-raw-known-entity" style="max-width:220px;">';
+			echo '<option value="">' . esc_html__('Known entity...', 'perchance-memory-manager') . '</option>';
+			$known = isset($known_entities_by_section[$section]) && is_array($known_entities_by_section[$section]) ? $known_entities_by_section[$section] : [];
+			foreach ($known as $known_name) {
+				echo '<option value="' . esc_attr((string) $known_name) . '">' . esc_html((string) $known_name) . '</option>';
+			}
+			echo '</select>';
+			echo '<br><input type="text" class="regular-text pmm-raw-entity" name="pmm_raw_table[' . esc_attr((string) $index) . '][entity]" value="' . esc_attr($entity) . '" placeholder="' . esc_attr__('Existing or new entity name', 'perchance-memory-manager') . '" style="margin-top:6px;">';
+			echo '<p class="description" style="margin:4px 0 0 0;">' . esc_html__('Pick known entity or type a new one manually.', 'perchance-memory-manager') . '</p>';
+			echo '</td>';
 			echo '<td><textarea name="pmm_raw_table[' . esc_attr((string) $index) . '][bullet]" rows="2" class="large-text code" style="min-width:100%;">' . esc_textarea($bullet) . '</textarea></td>';
 			echo '</tr>';
 		}
 
 		echo '</tbody></table>';
+		echo '<script>(function(){var knownBySection=' . wp_json_encode($known_entities_by_section) . ';document.querySelectorAll("tr[data-pmm-raw-row]").forEach(function(row){var section=row.querySelector(".pmm-raw-section");var known=row.querySelector(".pmm-raw-known-entity");var entity=row.querySelector(".pmm-raw-entity");if(!section||!known||!entity){return;}var fill=function(){var list=knownBySection[section.value]||[];known.innerHTML="";var placeholder=document.createElement("option");placeholder.value="";placeholder.textContent="' . esc_js(__('Known entity...', 'perchance-memory-manager')) . '";known.appendChild(placeholder);list.forEach(function(name){var option=document.createElement("option");option.value=name;option.textContent=name;known.appendChild(option);});};known.addEventListener("change",function(){if(known.value){entity.value=known.value;}});section.addEventListener("change",fill);fill();});})();</script>';
+	}
+
+	private function known_entities_for_raw_review($confirmed_registry, $cleaned_data) {
+		$out = [];
+		foreach ($this->entity_sections() as $section) {
+			$names = [];
+			if (isset($confirmed_registry[$section]) && is_array($confirmed_registry[$section])) {
+				foreach ($confirmed_registry[$section] as $row) {
+					if (!is_array($row)) {
+						continue;
+					}
+					$name = isset($row['name']) ? trim((string) $row['name']) : '';
+					if ($name !== '') {
+						$names[] = $name;
+					}
+				}
+			}
+			if (isset($cleaned_data[$section]) && is_array($cleaned_data[$section])) {
+				foreach ($cleaned_data[$section] as $entity => $items) {
+					if (strpos((string) $entity, '__') === 0) {
+						continue;
+					}
+					$entity = trim((string) $entity);
+					if ($entity !== '') {
+						$names[] = $entity;
+					}
+				}
+			}
+			$names = array_values(array_unique($names));
+			sort($names, SORT_NATURAL | SORT_FLAG_CASE);
+			$out[$section] = $names;
+		}
+
+		return $out;
+	}
+
+	private function entity_sections() {
+		return ['Characters', 'Organizations', 'Locations'];
+	}
+
+	private function get_confirmed_entity_registry_option() {
+		$stored = get_option('pmm_confirmed_entities_registry', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach ($this->entity_sections() as $section) {
+			$out[$section] = [];
+			$rows = isset($stored[$section]) && is_array($stored[$section]) ? $stored[$section] : [];
+			foreach ($rows as $fingerprint => $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+				$name = isset($row['name']) ? trim((string) $row['name']) : '';
+				$fp = PMM_Utils::name_fingerprint($name !== '' ? $name : (string) $fingerprint);
+				if ($fp === '') {
+					continue;
+				}
+				if ($name === '') {
+					$name = (string) $fingerprint;
+				}
+				$out[$section][$fp] = [
+					'name' => $name,
+					'seen_count' => isset($row['seen_count']) ? max(1, (int) $row['seen_count']) : 1,
+					'last_seen' => isset($row['last_seen']) ? max(0, (int) $row['last_seen']) : 0,
+				];
+			}
+		}
+
+		return $out;
+	}
+
+	private function render_confirmed_entity_registry_table($registry) {
+		$rows = [];
+		foreach ($this->entity_sections() as $section) {
+			$section_rows = isset($registry[$section]) && is_array($registry[$section]) ? $registry[$section] : [];
+			foreach ($section_rows as $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+				$name = isset($row['name']) ? trim((string) $row['name']) : '';
+				if ($name === '') {
+					continue;
+				}
+				$rows[] = [
+					'section' => $section,
+					'name' => $name,
+					'seen_count' => isset($row['seen_count']) ? max(1, (int) $row['seen_count']) : 1,
+					'last_seen' => isset($row['last_seen']) ? max(0, (int) $row['last_seen']) : 0,
+				];
+			}
+		}
+
+		if (empty($rows)) {
+			echo '<p class="description">' . esc_html__('No confirmed entities yet. Process at least one file to start building the registry.', 'perchance-memory-manager') . '</p>';
+			return;
+		}
+
+		usort($rows, static function ($a, $b) {
+			if ((int) $a['seen_count'] !== (int) $b['seen_count']) {
+				return ((int) $a['seen_count'] > (int) $b['seen_count']) ? -1 : 1;
+			}
+			$left = (string) $a['section'] . '|' . (string) $a['name'];
+			$right = (string) $b['section'] . '|' . (string) $b['name'];
+			return strcasecmp($left, $right);
+		});
+
+		$total = count($rows);
+		$shown = min(150, $total);
+		echo '<p class="description" style="margin-top:8px;">' . esc_html(sprintf(__('Showing %1$d of %2$d confirmed entities (sorted by frequency).', 'perchance-memory-manager'), $shown, $total)) . '</p>';
+		echo '<div style="overflow:auto;max-height:360px;border:1px solid #dcdcde;background:#fff;">';
+		echo '<table class="widefat striped"><thead><tr>';
+		echo '<th>' . esc_html__('Section', 'perchance-memory-manager') . '</th>';
+		echo '<th>' . esc_html__('Entity', 'perchance-memory-manager') . '</th>';
+		echo '<th>' . esc_html__('Seen', 'perchance-memory-manager') . '</th>';
+		echo '<th>' . esc_html__('Last Seen', 'perchance-memory-manager') . '</th>';
+		echo '</tr></thead><tbody>';
+
+		foreach (array_slice($rows, 0, $shown) as $row) {
+			$when = ((int) $row['last_seen'] > 0) ? wp_date('Y-m-d H:i', (int) $row['last_seen']) : '';
+			echo '<tr>';
+			echo '<td>' . esc_html((string) $row['section']) . '</td>';
+			echo '<td>' . esc_html((string) $row['name']) . '</td>';
+			echo '<td>' . esc_html((string) ((int) $row['seen_count'])) . '</td>';
+			echo '<td>' . esc_html($when) . '</td>';
+			echo '</tr>';
+		}
+
+		echo '</tbody></table></div>';
 	}
 
 	private function entity_rule_key($section, $name) {

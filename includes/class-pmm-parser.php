@@ -71,6 +71,9 @@ class PMM_Parser {
 	];
 
 	private $classification_settings = [
+		'auto_classify_new_entries' => 0,
+		'strict_prefix_review_mode' => 1,
+		'allow_non_prefix_auto_match' => 0,
 		'character_veto' => 1,
 		'organizations_min_score' => 2,
 		'locations_min_score' => 2,
@@ -79,9 +82,19 @@ class PMM_Parser {
 		'world_building_min_score' => 2,
 	];
 
+	private $confirmed_entities = [];
+
+	/**
+	 * Auto-derived map of unambiguous first names → canonical entity name.
+	 * Keyed by mb_strtolower(first_name). Built once in constructor.
+	 */
+	private $first_name_alias_map = [];
+
 	public function __construct() {
 		$this->alias_map = $this->merge_persisted_alias_rules($this->alias_map);
 		$this->classification_settings = $this->get_classification_settings_option();
+		$this->confirmed_entities = $this->get_confirmed_entities_registry_option();
+		$this->first_name_alias_map = $this->derive_first_name_alias_map();
 	}
 
 	public function parse($raw) {
@@ -94,7 +107,7 @@ class PMM_Parser {
 		$lines = $this->explode_lines($text);
 
 		$data = $this->empty_data_template();
-		$current_section = 'Notes';
+		$current_section = 'New Entries';
 		$current_entity = null;
 		$pending_raw_entry = [];
 
@@ -136,7 +149,7 @@ class PMM_Parser {
 			}
 
 			if (in_array($current_section, $this->section_level_sections(), true)) {
-				$data[$current_section]['__entries__'][] = $this->strip_bullet_prefix($line);
+				$data[$current_section]['__entries__'][] = $this->apply_alias_substitutions_to_entry($this->strip_bullet_prefix($line));
 				continue;
 			}
 
@@ -144,7 +157,7 @@ class PMM_Parser {
 
 			if (!empty($result['entity'])) {
 				if ($current_entity !== null && !empty($result['bullet'])) {
-					$data[$current_section][$current_entity][] = $result['bullet'];
+					$data[$current_section][$current_entity][] = $this->apply_alias_substitutions_to_entry($result['bullet']);
 				}
 
 				$current_entity = $this->canonical_entity_name($result['entity']);
@@ -154,9 +167,9 @@ class PMM_Parser {
 
 			if ($this->is_bullet($line)) {
 				if ($current_entity === null) {
-					$data[$current_section]['__unassigned__'][] = $this->strip_bullet_prefix($line);
+					$data[$current_section]['__unassigned__'][] = $this->apply_alias_substitutions_to_entry($this->strip_bullet_prefix($line));
 				} else {
-					$data[$current_section][$current_entity][] = $this->strip_bullet_prefix($line);
+					$data[$current_section][$current_entity][] = $this->apply_alias_substitutions_to_entry($this->strip_bullet_prefix($line));
 				}
 				continue;
 			}
@@ -165,7 +178,7 @@ class PMM_Parser {
 			if ($inline_entity !== null) {
 				$current_entity = $this->canonical_entity_name($inline_entity['entity']);
 				$data[$current_section] = $this->ensure_entity_array($data[$current_section], $current_entity);
-				$data[$current_section][$current_entity][] = $inline_entity['bullet'];
+				$data[$current_section][$current_entity][] = $this->apply_alias_substitutions_to_entry($inline_entity['bullet']);
 				continue;
 			}
 
@@ -177,9 +190,9 @@ class PMM_Parser {
 			}
 
 			if ($current_entity !== null) {
-				$data[$current_section][$current_entity][] = $line;
+				$data[$current_section][$current_entity][] = $this->apply_alias_substitutions_to_entry($line);
 			} else {
-				$data[$current_section]['__unassigned__'][] = $line;
+				$data[$current_section]['__unassigned__'][] = $this->apply_alias_substitutions_to_entry($line);
 			}
 		}
 
@@ -194,6 +207,7 @@ class PMM_Parser {
 		$before = $this->collect_entities_by_section($data);
 		$data = $this->merge_similar_entities($data);
 		$data = $this->ingest_new_entries($data);
+		$data = $this->apply_alias_substitutions_to_all_entries($data);
 
 		$after = $this->collect_entities_by_section($data);
 		$this->last_report = [
@@ -235,10 +249,13 @@ class PMM_Parser {
 			}
 
 			$suggestion = $this->suggest_new_entry_target($working, $entry);
+			$meta = $this->preview_row_confidence_meta($working, $entry, $suggestion);
 			$rows[] = [
 				'section' => $suggestion['section'],
 				'entity' => $suggestion['entity'],
 				'bullet' => $suggestion['bullet'],
+				'confidence' => $meta['confidence'],
+				'reason' => $meta['reason'],
 				'source' => $entry,
 			];
 			$working = $this->apply_preview_row($working, $suggestion['section'], $suggestion['entity'], $suggestion['bullet']);
@@ -271,13 +288,24 @@ class PMM_Parser {
 			return $data;
 		}
 
+		if (empty($this->classification_settings['auto_classify_new_entries'])) {
+			return $data;
+		}
+
+		$strict_prefix_review = !empty($this->classification_settings['strict_prefix_review_mode']);
+		$remaining_for_review = [];
+
 		foreach ($data['New Entries']['__entries__'] as $entry) {
-			$entry = trim($entry);
+			$entry = $this->apply_alias_substitutions_to_entry(trim($entry));
 			if ($entry === '') {
 				continue;
 			}
 
 			$assigned = $this->assign_to_existing_entity($data, $entry);
+			if ($strict_prefix_review && !$assigned) {
+				$remaining_for_review[] = $entry;
+				continue;
+			}
 
 			if (!$assigned) {
 				$guess = $this->guess_new_entry_target($entry);
@@ -294,7 +322,12 @@ class PMM_Parser {
 			}
 		}
 
-		unset($data['New Entries']);
+		if (!empty($remaining_for_review)) {
+			$data['New Entries']['__entries__'] = array_values($remaining_for_review);
+		} else {
+			unset($data['New Entries']);
+		}
+
 		return $data;
 	}
 
@@ -319,6 +352,20 @@ class PMM_Parser {
 		$technology_min_score = max(1, min(3, (int) $settings['technology_min_score']));
 		$vehicles_min_score = max(1, min(3, (int) $settings['vehicles_min_score']));
 		$world_building_min_score = max(1, min(3, (int) $settings['world_building_min_score']));
+		$character_name = $this->extract_character_anchor_name($entry);
+
+		// Prefer character routing when a stable person-name anchor is present,
+		// unless another section has a clearly stronger signal.
+		if ($character_name !== null) {
+			$other_signal_max = max($organization_score, $vehicle_score, $location_score, $technology_score, $world_building_score);
+			if ($looks_like_character_fact || $other_signal_max < 3 || $organization_score <= $org_min_score) {
+				return [
+					'section' => 'Characters',
+					'entity' => $character_name,
+					'bullet' => $this->strip_entity_prefix($entry, $character_name),
+				];
+			}
+		}
 
 		if (!$looks_like_character_fact && $organization_score >= $org_min_score && $organization_score >= $location_score && $organization_score >= $technology_score && $organization_score >= $vehicle_score && $organization_score >= $world_building_score) {
 			$name = $this->extract_leading_name($entry);
@@ -407,7 +454,7 @@ class PMM_Parser {
 
 		$score = 0;
 
-		if (preg_match('/\b(Tech|Technologies|Industries|Division|Labs|Holdings|University|Company|Corp|Corporation|Agency|Council|Syndicate|Guild|Institute|Foundation|Committee|Department|Bureau|Office|Consortium|Group|Team|Unit)\b/ui', $entry)) {
+		if (preg_match('/\b(Tech|Technologies|Industries|Division|Labs|Holdings|University|Company|Corp|Corporation|Agency|Council|Syndicate|Guild|Institute|Foundation|Committee|Department|Bureau|Office|Consortium)\b/ui', $entry)) {
 			$score++;
 		}
 
@@ -506,6 +553,9 @@ class PMM_Parser {
 
 	private function classification_settings_defaults() {
 		return [
+			'auto_classify_new_entries' => 0,
+			'strict_prefix_review_mode' => 1,
+			'allow_non_prefix_auto_match' => 0,
 			'character_veto' => 1,
 			'organizations_min_score' => 2,
 			'locations_min_score' => 2,
@@ -523,6 +573,9 @@ class PMM_Parser {
 		}
 
 		$settings = $defaults;
+		$settings['auto_classify_new_entries'] = !empty($stored['auto_classify_new_entries']) ? 1 : 0;
+		$settings['strict_prefix_review_mode'] = !empty($stored['strict_prefix_review_mode']) ? 1 : 0;
+		$settings['allow_non_prefix_auto_match'] = !empty($stored['allow_non_prefix_auto_match']) ? 1 : 0;
 		$settings['character_veto'] = !empty($stored['character_veto']) ? 1 : 0;
 		$settings['organizations_min_score'] = isset($stored['organizations_min_score']) ? max(1, min(3, (int) $stored['organizations_min_score'])) : $defaults['organizations_min_score'];
 		$settings['locations_min_score'] = isset($stored['locations_min_score']) ? max(1, min(3, (int) $stored['locations_min_score'])) : $defaults['locations_min_score'];
@@ -534,15 +587,23 @@ class PMM_Parser {
 	}
 
 	private function section_level_sections() {
-		return ['Relationships', 'NSFW', 'Notes', 'World Building'];
+		return ['Relationships', 'NSFW', 'Notes', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'];
 	}
 
 	private function extract_leading_name($entry) {
-		if (preg_match('/^([A-Z][A-Za-z0-9_\-()\'\/.& ]{1,80})\b/u', $entry, $m)) {
-			$name = trim($m[1]);
-			$name = preg_replace('/\s+(is|has|was|works|keeps|likes|runs|signed|uses|contains|joined|joins|met|meets|left|leaves|entered|enters)\b.*$/ui', '', $name);
-			$name = trim($name);
-			return $name ?: null;
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return null;
+		}
+
+		// Capture 1-5 leading title-like tokens to avoid treating entire facts as names.
+		if (preg_match('/^([A-Z][A-Za-z0-9_\-()\'\/.&]{1,30}(?:\s+[A-Z][A-Za-z0-9_\-()\'\/.&]{1,30}){0,4})\b/u', $entry, $m)) {
+			$name = trim((string) $m[1]);
+			$name = preg_replace('/\s+(and|or|but|with|without|from|at|in|on|by|for|to)$/ui', '', $name);
+			$name = trim((string) $name);
+			if ($name !== '' && mb_strlen($name) <= 80) {
+				return $name;
+			}
 		}
 
 		return null;
@@ -599,14 +660,7 @@ class PMM_Parser {
 	}
 
 	private function strip_entity_prefix($entry, $entity) {
-		if (empty($entity)) {
-			return $entry;
-		}
-
-		$pattern = '/^' . preg_quote($entity, '/') . '\s*/iu';
-		$stripped = preg_replace($pattern, '', $entry);
-		$stripped = ltrim((string) $stripped, "-: \t");
-		return $stripped ?: $entry;
+		return PMM_Utils::normalize_bullet((string) $entry);
 	}
 
 	private function flush_pending_raw_entry(&$data, &$pending_raw_entry) {
@@ -853,6 +907,258 @@ class PMM_Parser {
 		return false;
 	}
 
+	private function apply_alias_substitutions_to_all_entries($data) {
+		$aliases = $this->build_sorted_alias_substitution_pairs();
+		if (empty($aliases)) {
+			return $data;
+		}
+
+		$all_sections = array_keys($data);
+
+		foreach ($all_sections as $section) {
+			if (!is_array($data[$section])) {
+				continue;
+			}
+
+			foreach ($data[$section] as $entity => $bullets) {
+				if (!is_array($bullets)) {
+					continue;
+				}
+
+				$updated = [];
+				$dirty = false;
+				foreach ($bullets as $bullet) {
+					$bullet = (string) $bullet;
+					$new_bullet = $this->apply_alias_substitutions_to_entry($bullet, $aliases);
+					if ($new_bullet !== $bullet) {
+						$dirty = true;
+					}
+					$updated[] = $new_bullet;
+				}
+
+				if ($dirty) {
+					$data[$section][$entity] = $updated;
+				}
+			}
+		}
+
+		return $data;
+	}
+
+	private function derive_first_name_alias_map() {
+		// Only derive automatic first-name aliases from confirmed Character entities.
+		// This prevents first-name-style auto matching from Organizations/Locations.
+		$canonicals = [];
+		$character_entities = isset($this->confirmed_entities['Characters']) && is_array($this->confirmed_entities['Characters'])
+			? $this->confirmed_entities['Characters']
+			: [];
+
+		foreach ($character_entities as $name) {
+			$name = trim((string) $name);
+			if ($name === '') {
+				continue;
+			}
+
+			$parts = preg_split('/\s+/u', $name);
+			if (!is_array($parts) || count($parts) < 2) {
+				continue;
+			}
+
+			$fp = PMM_Utils::name_fingerprint($name);
+			if ($fp !== '') {
+				$canonicals[$fp] = $name;
+			}
+		}
+
+		if (empty($canonicals)) {
+			return [];
+		}
+
+		// Group canonicals by their first name (first whitespace-separated token).
+		$first_name_buckets = [];
+		foreach ($canonicals as $fp => $canonical) {
+			$parts = preg_split('/\s+/u', $canonical, 2);
+			$first = isset($parts[0]) ? trim((string) $parts[0]) : '';
+
+			// Require at least 3 chars and that the first name is not the entire canonical.
+			if (mb_strlen($first) < 3 || mb_strtolower($first) === mb_strtolower($canonical)) {
+				continue;
+			}
+
+			$first_lc = mb_strtolower($first);
+			if (!isset($first_name_buckets[$first_lc])) {
+				$first_name_buckets[$first_lc] = ['first' => $first, 'canonicals' => []];
+			}
+			$first_name_buckets[$first_lc]['canonicals'][$fp] = $canonical;
+		}
+
+		// Keep only unambiguous first names (exactly one canonical owner).
+		$map = [];
+		foreach ($first_name_buckets as $first_lc => $entry) {
+			if (count($entry['canonicals']) !== 1) {
+				continue;
+			}
+			// Don't override an explicit alias_map entry for this first name.
+			if (isset($this->alias_map[$first_lc])) {
+				continue;
+			}
+			$map[$first_lc] = reset($entry['canonicals']);
+		}
+
+		return $map;
+	}
+
+	private function build_sorted_alias_substitution_pairs() {
+		$aliases = [];
+
+		// Explicit alias_map entries.
+		if (!empty($this->alias_map) && is_array($this->alias_map)) {
+			foreach ($this->alias_map as $alias => $canonical) {
+				$alias = trim((string) $alias);
+				$canonical = trim((string) $canonical);
+				if ($alias === '' || $canonical === '') {
+					continue;
+				}
+
+				// Skip fingerprint keys (they are not readable names).
+				if (strpos($alias, ' ') === false && $alias === PMM_Utils::name_fingerprint($alias) && !preg_match('/[A-Z]/', $alias)) {
+					continue;
+				}
+
+				$aliases[] = ['alias' => $alias, 'canonical' => $canonical];
+			}
+		}
+
+		// Auto-derived unambiguous first-name aliases.
+		foreach ($this->first_name_alias_map as $first_lc => $canonical) {
+			$canonical = trim((string) $canonical);
+			$first_display = ucfirst($first_lc);
+			if ($first_display === '' || $canonical === '') {
+				continue;
+			}
+			$aliases[] = ['alias' => $first_display, 'canonical' => $canonical];
+		}
+
+		if (empty($aliases)) {
+			return [];
+		}
+
+		usort($aliases, static function ($a, $b) {
+			return mb_strlen($b['alias']) - mb_strlen($a['alias']);
+		});
+
+		return $aliases;
+	}
+
+	private function apply_alias_substitutions_to_entry($entry, $aliases = null) {
+		$entry = (string) $entry;
+		if ($entry === '') {
+			return $entry;
+		}
+
+		if ($aliases === null) {
+			$aliases = $this->build_sorted_alias_substitution_pairs();
+		}
+
+		if (empty($aliases) || !is_array($aliases)) {
+			return $entry;
+		}
+
+		foreach ($aliases as $pair) {
+			$alias = (string) $pair['alias'];
+			$canonical = (string) $pair['canonical'];
+
+			// Skip if the alias already equals the canonical (no substitution needed).
+			if (mb_strtolower($alias) === mb_strtolower($canonical)) {
+				continue;
+			}
+
+			$entry = $this->apply_single_alias_substitution($entry, $alias, $canonical);
+		}
+
+		return $entry;
+	}
+
+	private function apply_single_alias_substitution($text, $alias, $canonical) {
+		$text = (string) $text;
+		$alias = trim((string) $alias);
+		$canonical = trim((string) $canonical);
+
+		if ($text === '' || $alias === '' || $canonical === '') {
+			return $text;
+		}
+
+		$pattern = '/(?<![\w\-])' . preg_quote($alias, '/') . '(?![\w\-])/ui';
+
+		if ($this->is_ambiguous_single_token_person_alias($alias, $canonical)) {
+			$pattern = '/(?<![\w\-])' . preg_quote($alias, '/') . '(?![\w\-])(?!\s+(?:technologies|technology|systems|labs?|industries|inc|corp(?:oration)?|company|group|holdings|logistics|transport(?:ation)?|transit|motors|dynamics)\b)/ui';
+		}
+
+		// Prevent repeated expansion when canonical starts with the alias,
+		// e.g. "Genesis" -> "Genesis Technologies" on subsequent passes.
+		if (preg_match('/^' . preg_quote($alias, '/') . '(?:(\s+.+))?$/ui', $canonical, $m) === 1) {
+			$suffix = isset($m[1]) ? trim((string) $m[1]) : '';
+			if ($suffix !== '') {
+				$pattern = '/(?<![\w\-])' . preg_quote($alias, '/') . '(?![\w\-])(?!\s+' . preg_quote($suffix, '/') . '(?![\w\-]))/ui';
+			}
+		}
+
+		$updated = preg_replace($pattern, $canonical, $text);
+		if ($updated === null) {
+			return $text;
+		}
+
+		return $updated;
+	}
+
+	private function is_ambiguous_single_token_person_alias($alias, $canonical) {
+		$alias = trim((string) $alias);
+		$canonical = trim((string) $canonical);
+
+		if ($alias === '' || $canonical === '') {
+			return false;
+		}
+
+		if (preg_match('/\s/u', $alias) === 1) {
+			return false;
+		}
+
+		return $this->is_person_like_name($canonical);
+	}
+
+	private function is_person_like_name($name) {
+		$name = trim((string) $name);
+		if ($name === '') {
+			return false;
+		}
+
+		$parts = preg_split('/\s+/u', $name);
+		if (!is_array($parts) || count($parts) < 2) {
+			return false;
+		}
+
+		foreach ($parts as $part) {
+			$part = trim((string) $part);
+			if ($part === '') {
+				return false;
+			}
+			if ($this->is_organization_indicator_word($part)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private function is_organization_indicator_word($word) {
+		$word = mb_strtolower(trim((string) $word));
+		if ($word === '') {
+			return false;
+		}
+
+		return preg_match('/^(technologies|technology|systems?|labs?|industries|inc|corp|corporation|company|group|holdings|logistics|transport|transportation|transit|motors|dynamics)$/u', $word) === 1;
+	}
+
 	private function canonical_entity_name($name) {
 		$name = trim($name);
 		$name = trim($name, "\t\n\r\0\x0B:;,. ");
@@ -880,6 +1186,11 @@ class PMM_Parser {
 		$fingerprint = PMM_Utils::name_fingerprint($name);
 		if ($fingerprint !== '' && isset($this->alias_map[$fingerprint])) {
 			return $this->alias_map[$fingerprint];
+		}
+
+		// Fall back to auto-derived first-name map (unambiguous first names only).
+		if (isset($this->first_name_alias_map[$key])) {
+			return $this->first_name_alias_map[$key];
 		}
 
 		return $name;
@@ -936,7 +1247,7 @@ class PMM_Parser {
 			return $result;
 		}
 
-		$bullet = trim($m[1]);
+		$bullet = trim($content);
 		$entity = trim($m[2]);
 
 		$words = preg_split('/\s+/u', $entity);
@@ -1007,6 +1318,19 @@ class PMM_Parser {
 	}
 
 	private function suggest_existing_entity_target($data, $entry) {
+		$leading = $this->exact_leading_entity_target($data, $entry);
+		if ($leading !== null) {
+			return [
+				'section' => $leading['section'],
+				'entity' => $leading['entity'],
+				'bullet' => $this->strip_entity_prefix($entry, $leading['entity']),
+			];
+		}
+
+		if (empty($this->classification_settings['allow_non_prefix_auto_match'])) {
+			return null;
+		}
+
 		$best = [
 			'score' => 0.0,
 			'section' => null,
@@ -1056,6 +1380,181 @@ class PMM_Parser {
 			'entity' => $best['entity'],
 			'bullet' => $this->strip_entity_prefix($entry, $best['entity']),
 		];
+	}
+
+	private function exact_leading_entity_target($data, $entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return null;
+		}
+
+		$best = null;
+		$tie = false;
+		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
+
+		foreach ($sections as $section) {
+			$names = $this->known_entities_for_section($data, $section);
+			foreach ($names as $entity) {
+				foreach ($this->entity_alias_candidates($entity) as $candidate) {
+					if (!$this->entry_starts_with_entity_phrase($entry, $candidate)) {
+						continue;
+					}
+
+					if (!$this->is_valid_leading_alias_context($entry, $candidate, (string) $entity)) {
+						continue;
+					}
+
+					$len = mb_strlen($candidate);
+					if ($best === null || $len > $best['length']) {
+						$best = [
+							'section' => $section,
+							'entity' => $entity,
+							'length' => $len,
+						];
+						$tie = false;
+						continue;
+					}
+
+					if ($len === $best['length'] && ($section !== $best['section'] || $entity !== $best['entity'])) {
+						$tie = true;
+					}
+				}
+			}
+		}
+
+		if ($best === null || $tie) {
+			return null;
+		}
+
+		return [
+			'section' => $best['section'],
+			'entity' => $best['entity'],
+		];
+	}
+
+	private function is_valid_leading_alias_context($entry, $candidate, $canonical_entity) {
+		$entry = trim((string) $entry);
+		$candidate = trim((string) $candidate);
+		$canonical_entity = trim((string) $canonical_entity);
+
+		if ($entry === '' || $candidate === '' || $canonical_entity === '') {
+			return false;
+		}
+
+		if (!$this->is_ambiguous_single_token_person_alias($candidate, $canonical_entity)) {
+			return true;
+		}
+
+		$next = $this->next_word_after_leading_phrase($entry, $candidate);
+		if ($next === '') {
+			return true;
+		}
+
+		return !$this->is_organization_indicator_word($next);
+	}
+
+	private function next_word_after_leading_phrase($entry, $phrase) {
+		$entry = trim((string) $entry);
+		$phrase = trim((string) $phrase);
+		if ($entry === '' || $phrase === '') {
+			return '';
+		}
+
+		$pattern = '/^' . preg_quote($phrase, '/') . '\s+([A-Za-z][A-Za-z0-9_\-\/.&]{1,40})/u';
+		if (preg_match($pattern, $entry, $m) !== 1) {
+			return '';
+		}
+
+		return mb_strtolower(trim((string) $m[1]));
+	}
+
+	private function known_entities_for_section($data, $section) {
+		$by_fp = [];
+
+		if (isset($data[$section]) && is_array($data[$section])) {
+			foreach ($data[$section] as $entity => $items) {
+				if (strpos((string) $entity, '__') === 0) {
+					continue;
+				}
+				$name = trim((string) $entity);
+				$fp = PMM_Utils::name_fingerprint($name);
+				if ($name === '' || $fp === '') {
+					continue;
+				}
+				$by_fp[$fp] = $name;
+			}
+		}
+
+		if (isset($this->confirmed_entities[$section]) && is_array($this->confirmed_entities[$section])) {
+			foreach ($this->confirmed_entities[$section] as $fp => $name) {
+				$name = trim((string) $name);
+				$normalized_fp = PMM_Utils::name_fingerprint($name !== '' ? $name : (string) $fp);
+				if ($normalized_fp === '') {
+					continue;
+				}
+				if (!isset($by_fp[$normalized_fp]) || mb_strlen($name) > mb_strlen($by_fp[$normalized_fp])) {
+					$by_fp[$normalized_fp] = $name;
+				}
+			}
+		}
+
+		return array_values($by_fp);
+	}
+
+	private function entity_alias_candidates($entity) {
+		$entity = trim((string) $entity);
+		if ($entity === '') {
+			return [];
+		}
+
+		$candidates = [$entity];
+		$target_fp = PMM_Utils::name_fingerprint($entity);
+		$target_lc = mb_strtolower($entity);
+
+		foreach ($this->alias_map as $alias => $canonical) {
+			$canonical = trim((string) $canonical);
+			if ($canonical === '') {
+				continue;
+			}
+
+			$canonical_fp = PMM_Utils::name_fingerprint($canonical);
+			$canonical_lc = mb_strtolower($canonical);
+			if ($canonical_fp !== $target_fp && $canonical_lc !== $target_lc) {
+				continue;
+			}
+
+			$alias_name = trim((string) $alias);
+			if ($alias_name === '' || mb_strlen($alias_name) < 2) {
+				continue;
+			}
+			$candidates[] = $alias_name;
+		}
+
+		$clean = [];
+		foreach ($candidates as $candidate) {
+			$candidate = trim((string) $candidate);
+			if ($candidate === '') {
+				continue;
+			}
+			$fp = PMM_Utils::name_fingerprint($candidate);
+			if ($fp === '') {
+				continue;
+			}
+			$clean[$fp] = $candidate;
+		}
+
+		return array_values($clean);
+	}
+
+	private function entry_starts_with_entity_phrase($entry, $entity_phrase) {
+		$entry = trim((string) $entry);
+		$entity_phrase = trim((string) $entity_phrase);
+		if ($entry === '' || $entity_phrase === '') {
+			return false;
+		}
+
+		$pattern = '/^' . preg_quote($entity_phrase, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]])/iu';
+		return preg_match($pattern, $entry) === 1;
 	}
 
 	private function entry_mentions_entity_name($entry, $entity) {
@@ -1133,7 +1632,133 @@ class PMM_Parser {
 			return $existing;
 		}
 
+		$character_lean = $this->mentioned_character_target($data, $entry);
+		if ($character_lean !== null) {
+			return [
+				'section' => 'Characters',
+				'entity' => $character_lean,
+				'bullet' => $this->strip_entity_prefix($entry, $character_lean),
+			];
+		}
+
 		return $this->guess_new_entry_target($entry);
+	}
+
+	private function mentioned_character_target($data, $entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return null;
+		}
+
+		$best_name = '';
+		$best_score = 0.0;
+		$runner_up = 0.0;
+		foreach ($this->known_entities_for_section($data, 'Characters') as $name) {
+			$score = (float) PMM_Utils::contains_name_score($entry, (string) $name);
+			if ($score > $best_score) {
+				$runner_up = $best_score;
+				$best_score = $score;
+				$best_name = (string) $name;
+				continue;
+			}
+			if ($score > $runner_up) {
+				$runner_up = $score;
+			}
+		}
+
+		if ($best_name === '' || $best_score < 0.76) {
+			return null;
+		}
+
+		if (($best_score - $runner_up) < 0.08) {
+			return null;
+		}
+
+		return $best_name;
+	}
+
+	private function preview_row_confidence_meta($data, $entry, $suggestion) {
+		$section = isset($suggestion['section']) ? (string) $suggestion['section'] : 'Notes';
+		$entity = isset($suggestion['entity']) ? trim((string) $suggestion['entity']) : '';
+		$confidence = 35;
+		$reason = 'fallback note classification';
+
+		if ($section === 'New Entries') {
+			return [
+				'confidence' => 15,
+				'reason' => 'left in New Entries for manual routing',
+			];
+		}
+
+		if ($entity !== '' && isset($data[$section]) && is_array($data[$section]) && isset($data[$section][$entity])) {
+			$name_score = (float) PMM_Utils::contains_name_score((string) $entry, $entity);
+			if ($name_score >= 0.90) {
+				return [
+					'confidence' => 96,
+					'reason' => 'strong match to existing entity name',
+				];
+			}
+			if ($name_score >= 0.75) {
+				return [
+					'confidence' => 88,
+					'reason' => 'likely match to existing entity name',
+				];
+			}
+			return [
+				'confidence' => 78,
+				'reason' => 'assigned to existing entity context',
+			];
+		}
+
+		if ($section === 'Characters') {
+			if ($this->extract_character_anchor_name($entry) !== null) {
+				$confidence = 84;
+				$reason = 'character anchor detected in entry';
+			} elseif ($this->looks_like_character_fact($entry)) {
+				$confidence = 70;
+				$reason = 'character-style fact signal';
+			} else {
+				$confidence = 58;
+				$reason = 'weak character signal';
+			}
+		} elseif ($section === 'Organizations') {
+			$score = $this->organization_signal_score($entry);
+			$confidence = 48 + ($score * 14);
+			$reason = 'organization keyword signals';
+		} elseif ($section === 'Locations') {
+			$score = $this->location_signal_score($entry);
+			$confidence = 48 + ($score * 14);
+			$reason = 'location keyword signals';
+		} elseif ($section === 'Technology / Systems') {
+			$score = $this->technology_signal_score($entry);
+			$confidence = 48 + ($score * 14);
+			$reason = 'technology keyword signals';
+		} elseif ($section === 'Vehicles / Transportation') {
+			$score = $this->vehicle_signal_score($entry);
+			$confidence = 48 + ($score * 14);
+			$reason = 'vehicle keyword signals';
+		} elseif ($section === 'World Building') {
+			$score = $this->world_building_signal_score($entry);
+			$confidence = 50 + ($score * 13);
+			$reason = 'world-building context signal';
+		} elseif ($section === 'Notes') {
+			$confidence = 40;
+			$reason = 'general note fallback';
+		}
+
+		if ($entity !== '') {
+			$entity_score = (float) PMM_Utils::contains_name_score((string) $entry, $entity);
+			if ($entity_score >= 0.90) {
+				$confidence = max($confidence, 86);
+				$reason = 'entity name is explicit in entry text';
+			}
+		}
+
+		$confidence = max(10, min(99, (int) round($confidence)));
+		return [
+			'confidence' => $confidence,
+			'reason' => $reason,
+		];
 	}
 
 	private function apply_preview_row($data, $section, $entity, $bullet) {
@@ -1185,7 +1810,7 @@ class PMM_Parser {
 
 		return [
 			'entity' => $entity,
-			'bullet' => $bullet,
+			'bullet' => PMM_Utils::normalize_bullet($entity . ' - ' . $bullet),
 		];
 	}
 
@@ -1297,5 +1922,38 @@ class PMM_Parser {
 		}
 
 		return $base_map;
+	}
+
+	private function get_confirmed_entities_registry_option() {
+		if (!function_exists('get_option')) {
+			return [];
+		}
+
+		$stored = get_option('pmm_confirmed_entities_registry', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'] as $section) {
+			$out[$section] = [];
+			$rows = isset($stored[$section]) && is_array($stored[$section]) ? $stored[$section] : [];
+			foreach ($rows as $fingerprint => $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+				$name = isset($row['name']) ? trim((string) $row['name']) : '';
+				$fp = PMM_Utils::name_fingerprint($name !== '' ? $name : (string) $fingerprint);
+				if ($fp === '') {
+					continue;
+				}
+				if ($name === '') {
+					$name = (string) $fingerprint;
+				}
+				$out[$section][$fp] = $name;
+			}
+		}
+
+		return $out;
 	}
 }

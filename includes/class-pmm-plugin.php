@@ -19,6 +19,7 @@ class PMM_Plugin {
 		$this->batch_time_budget_seconds = max(8, min(45, (int) apply_filters('pmm_batch_time_budget_seconds', $this->batch_time_budget_seconds)));
 		$this->similarity_max_pairs_per_run = max(1000, (int) apply_filters('pmm_similarity_max_pairs_per_run', $this->similarity_max_pairs_per_run));
 		$this->similarity_max_entities_per_section = max(50, (int) apply_filters('pmm_similarity_max_entities_per_section', $this->similarity_max_entities_per_section));
+		$this->maybe_migrate_default_format_to_txt();
 
 		add_action('admin_menu', [$this, 'register_admin']);
 		add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
@@ -41,11 +42,26 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_save_global_entity_report', [$this, 'save_global_entity_report']);
 		add_action('admin_post_pmm_global_search_replace', [$this, 'global_search_replace']);
 		add_action('admin_post_pmm_save_alias_rules', [$this, 'save_alias_rules']);
+		add_action('admin_post_pmm_import_confirmed_entities', [$this, 'import_confirmed_entities']);
+		add_action('admin_post_pmm_save_confirmed_entities_section', [$this, 'save_confirmed_entities_section']);
 		add_action('admin_post_pmm_reprocess_last_output', [$this, 'reprocess_last_output']);
 		add_action('admin_post_pmm_download_last_output', [$this, 'download_last_output']);
 		add_action('admin_post_pmm_download_saved_version', [$this, 'download_saved_version']);
 		add_action('admin_post_pmm_save_preview_content', [$this, 'save_preview_content']);
 		add_action('wp_ajax_pmm_get_entities_for_section', [$this, 'ajax_get_entities_for_section']);
+	}
+
+	private function maybe_migrate_default_format_to_txt() {
+		if (get_option('pmm_default_format_migrated_to_txt', '0') === '1') {
+			return;
+		}
+
+		$current_format = (string) get_option('pmm_last_format', 'md');
+		if ($current_format === 'md') {
+			update_option('pmm_last_format', 'txt', false);
+		}
+
+		update_option('pmm_default_format_migrated_to_txt', '1', false);
 	}
 
 	public function ajax_get_entities_for_section() {
@@ -124,7 +140,7 @@ class PMM_Plugin {
 
 		$file = $_FILES['pmm_memory_file'];
 		$mode = isset($_POST['pmm_mode']) ? sanitize_text_field(wp_unslash($_POST['pmm_mode'])) : 'balanced';
-		$format = isset($_POST['pmm_format']) ? sanitize_text_field(wp_unslash($_POST['pmm_format'])) : 'md';
+		$format = isset($_POST['pmm_format']) ? sanitize_text_field(wp_unslash($_POST['pmm_format'])) : 'txt';
 		$drop_sequences = isset($_POST['pmm_drop_sequences']) ? $this->sanitize_drop_sequences(wp_unslash($_POST['pmm_drop_sequences'])) : [];
 		$include_entity_report = true;
 		$rescan_sections = !empty($_POST['pmm_rescan_sections']) ? 1 : 0;
@@ -204,7 +220,7 @@ class PMM_Plugin {
 			'total_lines' => $this->count_file_lines($source_path),
 			'line_batch_size' => $this->line_batch_size,
 			'context' => [
-				'section' => 'Notes',
+				'section' => 'New Entries',
 				'entity' => null,
 			],
 			'parsed' => $this->empty_data_template(),
@@ -291,9 +307,9 @@ class PMM_Plugin {
 			$mode = 'balanced';
 		}
 
-		$format = isset($_POST['pmm_format']) ? sanitize_text_field(wp_unslash($_POST['pmm_format'])) : (string) get_option('pmm_last_format', 'md');
+		$format = isset($_POST['pmm_format']) ? sanitize_text_field(wp_unslash($_POST['pmm_format'])) : (string) get_option('pmm_last_format', 'txt');
 		if (!in_array($format, ['md', 'txt'], true)) {
-			$format = 'md';
+		$format = 'txt';
 		}
 
 		if (isset($_POST['pmm_drop_sequences'])) {
@@ -478,7 +494,7 @@ class PMM_Plugin {
 			$this->redirect_with_error('preview_missing');
 		}
 
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 		$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
 
 		$data['content'] = $content;
@@ -657,7 +673,7 @@ class PMM_Plugin {
 
 		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats']) && !empty($cleaned) && is_array($cleaned)) {
 			$renderer = new PMM_Renderer();
-			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 			$output = $renderer->render($cleaned, $format);
 
 			$data['content'] = $output;
@@ -709,6 +725,137 @@ class PMM_Plugin {
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
 			'pmm_alias_saved' => (string) count($rules),
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function import_confirmed_entities() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_import_confirmed_entities');
+
+		$section = isset($_POST['pmm_confirmed_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_confirmed_section'])) : 'Characters';
+		if (!in_array($section, $this->entity_sections(), true)) {
+			$section = 'Characters';
+		}
+
+		$text = isset($_POST['pmm_confirmed_entities_text']) ? (string) wp_unslash($_POST['pmm_confirmed_entities_text']) : '';
+		$lines = preg_split('/\r\n|\r|\n/u', $text);
+		$registry = $this->get_confirmed_entity_registry_option();
+		$now = time();
+		$imported = 0;
+		$updated = 0;
+
+		foreach ((array) $lines as $line) {
+			$name = trim((string) $line);
+			$name = preg_replace('/^[\-*•]\s+/u', '', (string) $name);
+			$name = trim((string) $name);
+			if ($name === '') {
+				continue;
+			}
+
+			$fp = PMM_Utils::name_fingerprint($name);
+			if ($fp === '') {
+				continue;
+			}
+
+			if (!isset($registry[$section])) {
+				$registry[$section] = [];
+			}
+
+			if (!isset($registry[$section][$fp])) {
+				$registry[$section][$fp] = [
+					'name' => $name,
+					'seen_count' => 1,
+					'last_seen' => $now,
+				];
+				++$imported;
+				continue;
+			}
+
+			$existing = $registry[$section][$fp];
+			$registry[$section][$fp] = [
+				'name' => $this->pick_canonical_name(isset($existing['name']) ? (string) $existing['name'] : '', $name),
+				'seen_count' => max(1, (int) (isset($existing['seen_count']) ? $existing['seen_count'] : 1)) + 1,
+				'last_seen' => $now,
+			];
+			++$updated;
+		}
+
+		update_option('pmm_confirmed_entities_registry', $registry, false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_confirmed_imported' => (string) $imported,
+			'pmm_confirmed_updated' => (string) $updated,
+			'pmm_confirmed_section' => (string) $section,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function save_confirmed_entities_section() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_save_confirmed_entities_section');
+
+		$section = isset($_POST['pmm_confirmed_edit_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_confirmed_edit_section'])) : 'Characters';
+		if (!in_array($section, $this->entity_sections(), true)) {
+			$section = 'Characters';
+		}
+
+		$text = isset($_POST['pmm_confirmed_edit_entities_text']) ? (string) wp_unslash($_POST['pmm_confirmed_edit_entities_text']) : '';
+		$lines = preg_split('/\r\n|\r|\n/u', $text);
+		$registry = $this->get_confirmed_entity_registry_option();
+		$current_section = isset($registry[$section]) && is_array($registry[$section]) ? $registry[$section] : [];
+		$now = time();
+		$next_section = [];
+
+		foreach ((array) $lines as $line) {
+			$name = trim((string) $line);
+			$name = preg_replace('/^[\-*•]\s+/u', '', (string) $name);
+			$name = trim((string) $name);
+			if ($name === '') {
+				continue;
+			}
+
+			$fp = PMM_Utils::name_fingerprint($name);
+			if ($fp === '') {
+				continue;
+			}
+
+			if (isset($next_section[$fp])) {
+				$next_section[$fp]['name'] = $this->pick_canonical_name((string) $next_section[$fp]['name'], $name);
+				continue;
+			}
+
+			if (isset($current_section[$fp]) && is_array($current_section[$fp])) {
+				$existing = $current_section[$fp];
+				$next_section[$fp] = [
+					'name' => $this->pick_canonical_name(isset($existing['name']) ? (string) $existing['name'] : '', $name),
+					'seen_count' => max(1, (int) (isset($existing['seen_count']) ? $existing['seen_count'] : 1)),
+					'last_seen' => max(0, (int) (isset($existing['last_seen']) ? $existing['last_seen'] : $now)),
+				];
+				continue;
+			}
+
+			$next_section[$fp] = [
+				'name' => $name,
+				'seen_count' => 1,
+				'last_seen' => $now,
+			];
+		}
+
+		$registry[$section] = $next_section;
+		update_option('pmm_confirmed_entities_registry', $registry, false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_confirmed_saved' => (string) count($next_section),
+			'pmm_confirmed_section' => (string) $section,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -960,7 +1107,7 @@ class PMM_Plugin {
 
 		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
 			$renderer = new PMM_Renderer();
-			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 			$output = $renderer->render($cleaned, $format);
 
 			$data['content'] = $output;
@@ -1107,7 +1254,7 @@ class PMM_Plugin {
 
 		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
 			$renderer = new PMM_Renderer();
-			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 			$output = $renderer->render($cleaned, $format);
 
 			$data['content'] = $output;
@@ -1211,13 +1358,52 @@ class PMM_Plugin {
 		}
 
 		check_admin_referer('pmm_stage_raw_import');
+		$stage_mode = isset($_POST['pmm_raw_stage_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_raw_stage_mode'])) : 'manual';
+		$confidence_threshold = isset($_POST['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) wp_unslash((string) $_POST['pmm_raw_confidence_threshold']))) : 75;
+
+		if (in_array($stage_mode, ['all_preview_rows', 'high_confidence_only', 'low_confidence_only'], true)) {
+			$preview = get_transient($this->get_raw_import_preview_key());
+			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
+			$rows = $this->filter_preview_rows_by_confidence($preview_rows, $stage_mode, $confidence_threshold);
+			set_transient($this->get_staged_raw_import_key(), $rows, 30 * MINUTE_IN_SECONDS);
+			$this->mark_output_rules_dirty();
+
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_raw_staged' => (string) count($rows),
+				'pmm_raw_stage_mode' => (string) $stage_mode,
+				'pmm_raw_confidence_threshold' => (string) $confidence_threshold,
+			], admin_url('admin.php')));
+			exit;
+		}
 
 		$text = isset($_POST['pmm_raw_import_rows']) ? (string) wp_unslash($_POST['pmm_raw_import_rows']) : '';
 		$table_rows = isset($_POST['pmm_raw_table']) && is_array($_POST['pmm_raw_table']) ? (array) wp_unslash($_POST['pmm_raw_table']) : [];
-		if ($text === '' && !empty($table_rows)) {
-			$text = $this->serialize_raw_import_table_rows($table_rows);
-		}
 		$file_text = $this->read_uploaded_text_file('pmm_raw_import_rows_file', 15 * 1024 * 1024);
+		if (!empty($table_rows) && $file_text === '') {
+			$preview = get_transient($this->get_raw_import_preview_key());
+			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
+			if (!empty($preview_rows)) {
+				$merged_preview_rows = $this->merge_preview_rows_with_table_edits($preview_rows, $table_rows);
+				$rows = $this->filter_preview_rows_by_confidence($merged_preview_rows, 'all_preview_rows', 1);
+				set_transient($this->get_raw_import_preview_key(), [
+					'raw_text' => isset($preview['raw_text']) ? (string) $preview['raw_text'] : '',
+					'rows' => $merged_preview_rows,
+				], 30 * MINUTE_IN_SECONDS);
+				set_transient($this->get_staged_raw_import_key(), $rows, 30 * MINUTE_IN_SECONDS);
+				$this->mark_output_rules_dirty();
+
+				wp_safe_redirect(add_query_arg([
+					'page' => 'perchance-memory-manager',
+					'pmm_raw_staged' => (string) count($rows),
+				], admin_url('admin.php')));
+				exit;
+			}
+
+			if ($text === '') {
+				$text = $this->serialize_raw_import_table_rows($table_rows);
+			}
+		}
 		if ($file_text !== '') {
 			$text = $file_text;
 		}
@@ -1370,7 +1556,7 @@ class PMM_Plugin {
 		}
 
 		$renderer = new PMM_Renderer();
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 		$output = $renderer->render($cleaned, $format);
 
 		$data['content'] = $output;
@@ -1459,7 +1645,7 @@ class PMM_Plugin {
 		}
 
 		$renderer = new PMM_Renderer();
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 		$output = $renderer->render($cleaned, $format);
 
 		$data['content'] = $output;
@@ -1512,9 +1698,12 @@ class PMM_Plugin {
 		$entity = isset($_POST['pmm_prune_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_entity'])) : '';
 		$max_keep = isset($_POST['pmm_prune_max_keep']) ? max(50, min(5000, (int) $_POST['pmm_prune_max_keep'])) : 1500;
 		$remove_stale = !empty($_POST['pmm_prune_remove_stale']);
+		$remove_unreferenced = !empty($_POST['pmm_prune_remove_unreferenced']);
 		$preview_only = !empty($_POST['pmm_prune_preview_only']);
 		$similarity_threshold = isset($_POST['pmm_prune_similarity_threshold']) ? (float) wp_unslash((string) $_POST['pmm_prune_similarity_threshold']) : 0.90;
 		$similarity_threshold = min(0.98, max(0.75, $similarity_threshold));
+		$unreferenced_threshold = isset($_POST['pmm_prune_unreferenced_threshold']) ? (float) wp_unslash((string) $_POST['pmm_prune_unreferenced_threshold']) : 0.60;
+		$unreferenced_threshold = min(0.95, max(0.40, $unreferenced_threshold));
 
 		$valid_sections = $this->valid_sections();
 		if (!in_array($section, $valid_sections, true)) {
@@ -1535,6 +1724,7 @@ class PMM_Plugin {
 			'exact_duplicates' => 0,
 			'near_duplicates' => 0,
 			'stale_removed' => 0,
+			'unreferenced_removed' => 0,
 			'critical_preserved' => 0,
 			'trimmed' => 0,
 		];
@@ -1542,10 +1732,23 @@ class PMM_Plugin {
 			'exact_duplicates' => [],
 			'near_duplicates' => [],
 			'stale_removed' => [],
+			'unreferenced_removed' => [],
 			'trimmed' => [],
 		];
 
-		$pruned_items = $this->prune_entity_entry_list((array) $cleaned[$section][$bucket_key], $max_keep, $remove_stale, $similarity_threshold, $stats, $report);
+		$known_entities = $this->collect_known_entity_names($cleaned);
+
+		$pruned_items = $this->prune_entity_entry_list(
+			(array) $cleaned[$section][$bucket_key],
+			$max_keep,
+			$remove_stale,
+			$similarity_threshold,
+			$stats,
+			$report,
+			$remove_unreferenced,
+			$known_entities,
+			$unreferenced_threshold
+		);
 
 		if ($preview_only) {
 			set_transient('pmm_prune_preview_' . get_current_user_id(), [
@@ -1554,11 +1757,14 @@ class PMM_Plugin {
 				'max_keep' => $max_keep,
 				'similarity_threshold' => $similarity_threshold,
 				'remove_stale' => $remove_stale ? 1 : 0,
+				'remove_unreferenced' => $remove_unreferenced ? 1 : 0,
+				'unreferenced_threshold' => $unreferenced_threshold,
 				'stats' => $stats,
 				'report' => [
 					'exact_duplicates' => array_slice((array) $report['exact_duplicates'], 0, 200),
 					'near_duplicates' => array_slice((array) $report['near_duplicates'], 0, 200),
 					'stale_removed' => array_slice((array) $report['stale_removed'], 0, 200),
+					'unreferenced_removed' => array_slice((array) $report['unreferenced_removed'], 0, 200),
 					'trimmed' => array_slice((array) $report['trimmed'], 0, 300),
 				],
 			], 30 * MINUTE_IN_SECONDS);
@@ -1576,7 +1782,7 @@ class PMM_Plugin {
 		$cleaned[$section][$bucket_key] = $pruned_items;
 
 		$renderer = new PMM_Renderer();
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 		$output = $renderer->render($cleaned, $format);
 
 		$data['content'] = $output;
@@ -1609,6 +1815,7 @@ class PMM_Plugin {
 			'pmm_prune_exact' => (string) $stats['exact_duplicates'],
 			'pmm_prune_near' => (string) $stats['near_duplicates'],
 			'pmm_prune_stale' => (string) $stats['stale_removed'],
+			'pmm_prune_unref' => (string) $stats['unreferenced_removed'],
 			'pmm_prune_critical' => (string) $stats['critical_preserved'],
 			'pmm_prune_trimmed' => (string) $stats['trimmed'],
 		], admin_url('admin.php')));
@@ -1635,17 +1842,41 @@ class PMM_Plugin {
 		$entity_name = isset($_POST['pmm_global_entity_name']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_global_entity_name'])) : '';
 		$page_number = isset($_POST['pmm_global_entity_page']) ? max(1, (int) $_POST['pmm_global_entity_page']) : 1;
 		$per_page = isset($_POST['pmm_global_entity_per_page']) ? max(25, min(100, (int) $_POST['pmm_global_entity_per_page'])) : 50;
+		$entry_convert_mode = !empty($_POST['pmm_entry_convert_mode']);
+		$entry_convert_section = isset($_POST['pmm_entry_convert_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_entry_convert_section'])) : 'all';
+		$entry_convert_entity = isset($_POST['pmm_entry_convert_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_entry_convert_entity'])) : '';
+		$entry_convert_search = isset($_POST['pmm_entry_convert_search']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_entry_convert_search'])) : '';
+		$entry_convert_include_mentions = isset($_POST['pmm_entry_convert_include_mentions']) ? ((int) $_POST['pmm_entry_convert_include_mentions'] === 1) : null;
+		if ($entry_convert_include_mentions === null) {
+			$legacy_global_entity_settings = $this->get_global_entity_report_settings_option();
+			$entry_convert_include_mentions = !empty($legacy_global_entity_settings['include_mentions']);
+		}
+		$entry_convert_load = isset($_POST['pmm_entry_convert_load']) ? ((int) $_POST['pmm_entry_convert_load'] === 1) : $entry_convert_mode;
+		$entry_convert_page = isset($_POST['pmm_entry_convert_page']) ? max(1, (int) $_POST['pmm_entry_convert_page']) : 1;
+		$entry_convert_per_page = isset($_POST['pmm_entry_convert_per_page']) ? max(25, min(100, (int) $_POST['pmm_entry_convert_per_page'])) : 50;
 
 		$snapshot = isset($_POST['pmm_global_snapshot']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_global_snapshot'])) : '';
 		$current_snapshot = md5((string) $data['content']);
 		if ($snapshot !== '' && !hash_equals($current_snapshot, $snapshot)) {
-			wp_safe_redirect(add_query_arg([
+			$stale_args = [
 				'page' => 'perchance-memory-manager',
 				'pmm_error' => 'global_entity_stale',
-				'pmm_global_entity_name' => $entity_name,
-				'pmm_global_entity_page' => $page_number,
-				'pmm_global_entity_per_page' => $per_page,
-			], admin_url('admin.php')));
+			];
+			if ($entry_convert_mode) {
+				$stale_args['pmm_entry_convert_section'] = $entry_convert_section;
+				$stale_args['pmm_entry_convert_entity'] = $entry_convert_entity;
+				$stale_args['pmm_entry_convert_search'] = $entry_convert_search;
+				$stale_args['pmm_entry_convert_include_mentions'] = $entry_convert_include_mentions ? 1 : 0;
+				$stale_args['pmm_entry_convert_load'] = $entry_convert_load ? 1 : 0;
+				$stale_args['pmm_entry_convert_page'] = $entry_convert_page;
+				$stale_args['pmm_entry_convert_per_page'] = $entry_convert_per_page;
+			} else {
+				$stale_args['pmm_global_entity_name'] = $entity_name;
+				$stale_args['pmm_global_entity_page'] = $page_number;
+				$stale_args['pmm_global_entity_per_page'] = $per_page;
+			}
+
+			wp_safe_redirect(add_query_arg($stale_args, admin_url('admin.php')));
 			exit;
 		}
 
@@ -1656,8 +1887,9 @@ class PMM_Plugin {
 		}
 		$rows = array_slice($rows, 0, 300);
 
-		$valid_sections = $this->valid_sections();
-		$section_level_sections = $this->section_level_sections();
+		$valid_sections = array_values(array_unique(array_merge($this->valid_sections(), ['New Entries'])));
+		$section_level_sections = array_values(array_unique(array_merge($this->section_level_sections(), ['New Entries'])));
+		$alias_substitution_pairs = $this->build_alias_substitution_pairs(get_option('pmm_alias_rules', []));
 
 		$reviewed = 0;
 		$changed = 0;
@@ -1672,13 +1904,13 @@ class PMM_Plugin {
 
 			$source_section = isset($row['source_section']) ? sanitize_text_field((string) $row['source_section']) : '';
 			$source_entity = isset($row['source_entity']) ? sanitize_text_field((string) $row['source_entity']) : '';
-			$source_entry = isset($row['source_entry']) ? PMM_Utils::normalize_bullet((string) $row['source_entry']) : '';
+			$source_entry = isset($row['source_entry']) ? (string) $row['source_entry'] : '';
 			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
 			$target_section = isset($row['target_section']) ? sanitize_text_field((string) $row['target_section']) : $source_section;
 			$target_entity = isset($row['target_entity']) ? sanitize_text_field((string) $row['target_entity']) : $source_entity;
-			$target_entry = isset($row['entry']) ? PMM_Utils::normalize_bullet((string) $row['entry']) : $source_entry;
+			$target_entry = isset($row['entry']) ? (string) $row['entry'] : $source_entry;
 
-			if ($source_entry === '' || !in_array($source_section, $valid_sections, true)) {
+			if (trim($source_entry) === '' || !in_array($source_section, $valid_sections, true)) {
 				continue;
 			}
 
@@ -1696,9 +1928,10 @@ class PMM_Plugin {
 				$target_entity = $this->normalize_entity_target_name($target_section, $source_entity, $target_entity);
 			}
 
-			if ($target_entry === '') {
+			if (trim($target_entry) === '') {
 				$target_entry = $source_entry;
 			}
+			$target_entry = $this->apply_alias_substitutions_to_text($target_entry, $alias_substitution_pairs);
 
 			++$reviewed;
 
@@ -1727,7 +1960,7 @@ class PMM_Plugin {
 
 		if ($changed > 0) {
 			$renderer = new PMM_Renderer();
-			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 			$output = $renderer->render($cleaned, $format);
 
 			$data['content'] = $output;
@@ -1750,17 +1983,35 @@ class PMM_Plugin {
 			set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
 		}
 
-		wp_safe_redirect(add_query_arg([
+		$redirect_args = [
 			'page' => 'perchance-memory-manager',
-			'pmm_global_entity_saved' => (string) $changed,
-			'pmm_global_entity_reviewed' => (string) $reviewed,
-			'pmm_global_entity_moved' => (string) $moved,
-			'pmm_global_entity_removed' => (string) $removed,
-			'pmm_global_entity_updated' => (string) $updated,
-			'pmm_global_entity_name' => $entity_name,
-			'pmm_global_entity_page' => $page_number,
-			'pmm_global_entity_per_page' => $per_page,
-		], admin_url('admin.php')));
+		];
+
+		if ($entry_convert_mode) {
+			$redirect_args['pmm_entry_convert_saved'] = (string) $changed;
+			$redirect_args['pmm_entry_convert_reviewed'] = (string) $reviewed;
+			$redirect_args['pmm_entry_convert_moved'] = (string) $moved;
+			$redirect_args['pmm_entry_convert_removed'] = (string) $removed;
+			$redirect_args['pmm_entry_convert_updated'] = (string) $updated;
+			$redirect_args['pmm_entry_convert_section'] = $entry_convert_section;
+			$redirect_args['pmm_entry_convert_entity'] = $entry_convert_entity;
+			$redirect_args['pmm_entry_convert_search'] = $entry_convert_search;
+			$redirect_args['pmm_entry_convert_include_mentions'] = $entry_convert_include_mentions ? 1 : 0;
+			$redirect_args['pmm_entry_convert_load'] = $entry_convert_load ? 1 : 0;
+			$redirect_args['pmm_entry_convert_page'] = $entry_convert_page;
+			$redirect_args['pmm_entry_convert_per_page'] = $entry_convert_per_page;
+		} else {
+			$redirect_args['pmm_global_entity_saved'] = (string) $changed;
+			$redirect_args['pmm_global_entity_reviewed'] = (string) $reviewed;
+			$redirect_args['pmm_global_entity_moved'] = (string) $moved;
+			$redirect_args['pmm_global_entity_removed'] = (string) $removed;
+			$redirect_args['pmm_global_entity_updated'] = (string) $updated;
+			$redirect_args['pmm_global_entity_name'] = $entity_name;
+			$redirect_args['pmm_global_entity_page'] = $page_number;
+			$redirect_args['pmm_global_entity_per_page'] = $per_page;
+		}
+
+		wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
 		exit;
 	}
 
@@ -1807,7 +2058,7 @@ class PMM_Plugin {
 		$cleaned = $this->apply_global_search_replace($cleaned, $search, $replace, $scope, $case_sensitive, $stats);
 
 		$renderer = new PMM_Renderer();
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 		$output = $renderer->render($cleaned, $format);
 
 		$data['content'] = $output;
@@ -2087,6 +2338,7 @@ class PMM_Plugin {
 
 		$renderer = new PMM_Renderer();
 		$output = $renderer->render($state['cleaned'], $state['format']);
+		$this->update_confirmed_entity_registry_from_cleaned($state['cleaned']);
 
 		$stats = [
 			'sections' => count($state['cleaned']),
@@ -2167,7 +2419,7 @@ class PMM_Plugin {
 
 	private function detect_context($lines, $initial) {
 		$context = [
-			'section' => isset($initial['section']) ? $initial['section'] : 'Notes',
+			'section' => isset($initial['section']) ? $initial['section'] : 'New Entries',
 			'entity' => isset($initial['entity']) ? $initial['entity'] : null,
 		];
 
@@ -2372,7 +2624,101 @@ class PMM_Plugin {
 			}
 		}
 
+		$confirmed = $this->get_confirmed_entity_registry_option();
+		foreach ($this->entity_sections() as $section) {
+			if (!isset($data[$section]) || !isset($confirmed[$section]) || !is_array($confirmed[$section])) {
+				continue;
+			}
+			foreach ($confirmed[$section] as $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+				$name = isset($row['name']) ? trim((string) $row['name']) : '';
+				if ($name !== '') {
+					$data[$section][$name] = [];
+				}
+			}
+		}
+
 		return $data;
+	}
+
+	private function get_confirmed_entity_registry_option() {
+		$sections = $this->entity_sections();
+		$stored = get_option('pmm_confirmed_entities_registry', []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach ($sections as $section) {
+			$out[$section] = [];
+			$rows = isset($stored[$section]) && is_array($stored[$section]) ? $stored[$section] : [];
+			foreach ($rows as $fingerprint => $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+				$name = isset($row['name']) ? trim((string) $row['name']) : '';
+				$fp = PMM_Utils::name_fingerprint($name !== '' ? $name : (string) $fingerprint);
+				if ($fp === '') {
+					continue;
+				}
+				if ($name === '') {
+					$name = (string) $fingerprint;
+				}
+				$seen_count = isset($row['seen_count']) ? max(1, (int) $row['seen_count']) : 1;
+				$last_seen = isset($row['last_seen']) ? max(0, (int) $row['last_seen']) : 0;
+				$out[$section][$fp] = [
+					'name' => $name,
+					'seen_count' => $seen_count,
+					'last_seen' => $last_seen,
+				];
+			}
+		}
+
+		return $out;
+	}
+
+	private function update_confirmed_entity_registry_from_cleaned($cleaned) {
+		$registry = $this->get_confirmed_entity_registry_option();
+		$now = time();
+
+		foreach ($this->entity_sections() as $section) {
+			$entities = isset($cleaned[$section]) && is_array($cleaned[$section]) ? $cleaned[$section] : [];
+			foreach ($entities as $entity => $items) {
+				if (strpos((string) $entity, '__') === 0) {
+					continue;
+				}
+
+				$name = trim((string) $entity);
+				$fp = PMM_Utils::name_fingerprint($name);
+				if ($name === '' || $fp === '') {
+					continue;
+				}
+
+				if (!isset($registry[$section][$fp])) {
+					$registry[$section][$fp] = [
+						'name' => $name,
+						'seen_count' => 1,
+						'last_seen' => $now,
+					];
+					continue;
+				}
+
+				$existing = $registry[$section][$fp];
+				$canonical = $this->pick_canonical_name(
+					isset($existing['name']) ? (string) $existing['name'] : '',
+					$name
+				);
+				$registry[$section][$fp] = [
+					'name' => $canonical,
+					'seen_count' => max(1, (int) (isset($existing['seen_count']) ? $existing['seen_count'] : 1)) + 1,
+					'last_seen' => $now,
+				];
+			}
+		}
+
+		update_option('pmm_confirmed_entities_registry', $registry, false);
 	}
 
 	private function serialize_staged_raw_import_rows($rows) {
@@ -2450,6 +2796,81 @@ class PMM_Plugin {
 		return $rows;
 	}
 
+	private function filter_preview_rows_by_confidence($rows, $mode, $threshold) {
+		$valid_sections = $this->valid_sections();
+		$out = [];
+
+		foreach ((array) $rows as $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$confidence = isset($row['confidence']) ? (int) $row['confidence'] : 50;
+			$include = false;
+			if ($mode === 'all_preview_rows') {
+				$include = true;
+			} elseif ($mode === 'high_confidence_only') {
+				$include = ($confidence >= $threshold);
+			} elseif ($mode === 'low_confidence_only') {
+				$include = ($confidence < $threshold);
+			}
+
+			if (!$include) {
+				continue;
+			}
+
+			$section = isset($row['section']) ? sanitize_text_field((string) $row['section']) : 'Notes';
+			if (!in_array($section, $valid_sections, true)) {
+				$section = 'Notes';
+			}
+
+			$entity = isset($row['entity']) ? sanitize_text_field((string) $row['entity']) : '';
+			$bullet = isset($row['bullet']) ? sanitize_textarea_field((string) $row['bullet']) : '';
+			if ($bullet === '') {
+				continue;
+			}
+
+			$out[] = [
+				'section' => $section,
+				'entity' => $entity,
+				'bullet' => $bullet,
+			];
+		}
+
+		return $out;
+	}
+
+	private function merge_preview_rows_with_table_edits($preview_rows, $table_rows) {
+		$valid_sections = $this->valid_sections();
+		$merged = (array) $preview_rows;
+
+		foreach ((array) $table_rows as $index => $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$idx = (int) $index;
+			if (!isset($merged[$idx]) || !is_array($merged[$idx])) {
+				continue;
+			}
+
+			$section = isset($row['section']) ? sanitize_text_field((string) $row['section']) : (string) ($merged[$idx]['section'] ?? 'Notes');
+			if (!in_array($section, $valid_sections, true)) {
+				$section = 'Notes';
+			}
+
+			$entity = isset($row['entity']) ? sanitize_text_field((string) $row['entity']) : (string) ($merged[$idx]['entity'] ?? '');
+			$bullet = isset($row['bullet']) ? sanitize_textarea_field((string) $row['bullet']) : (string) ($merged[$idx]['bullet'] ?? '');
+			$bullet = trim((string) $bullet);
+
+			$merged[$idx]['section'] = $section;
+			$merged[$idx]['entity'] = $entity;
+			$merged[$idx]['bullet'] = $bullet;
+		}
+
+		return $merged;
+	}
+
 	private function read_uploaded_text_file($field, $max_bytes) {
 		if (empty($_FILES[$field]['tmp_name']) || !is_uploaded_file($_FILES[$field]['tmp_name'])) {
 			return '';
@@ -2515,7 +2936,7 @@ class PMM_Plugin {
 				'entities' => PMM_Utils::count_entities($cleaned),
 				'bullets' => PMM_Utils::count_bullets($cleaned),
 				'mode' => (string) get_option('pmm_last_mode', 'balanced'),
-				'format' => (string) get_option('pmm_last_format', 'md'),
+				'format' => (string) get_option('pmm_last_format', 'txt'),
 				'original_filename' => $latest_version_file !== '' ? $latest_version_file : basename($latest_version_path),
 				'version_filename' => $latest_version_file,
 				'version_saved_at' => $latest_version_saved_at,
@@ -2540,8 +2961,8 @@ class PMM_Plugin {
 		$lines = preg_split('/\r\n|\r|\n/u', $entries_text);
 		$items = [];
 		foreach ((array) $lines as $line) {
-			$line = trim((string) $line);
-			if ($line !== '') {
+			$line = (string) $line;
+			if (trim($line) !== '') {
 				$items[] = $line;
 			}
 		}
@@ -2808,7 +3229,7 @@ class PMM_Plugin {
 			'total_lines' => $this->count_file_lines($path),
 			'line_batch_size' => $this->line_batch_size,
 			'context' => [
-				'section' => 'Notes',
+				'section' => 'New Entries',
 				'entity' => null,
 			],
 			'parsed' => $this->empty_data_template(),
@@ -3063,7 +3484,7 @@ class PMM_Plugin {
 		})));
 
 		if (!empty($entry_terms)) {
-			$sections = ['Relationships', 'NSFW', 'Notes', 'World Building', 'New Entries'];
+			$sections = ['Relationships', 'NSFW', 'Notes', 'World Building', 'Technology / Systems', 'Vehicles / Transportation', 'New Entries'];
 			$keys = ['__entries__', '__unassigned__'];
 			foreach ($sections as $section) {
 				if (empty($data[$section]) || !is_array($data[$section])) {
@@ -3243,6 +3664,9 @@ class PMM_Plugin {
 
 	private function classification_settings_defaults() {
 		return [
+			'auto_classify_new_entries' => 0,
+			'strict_prefix_review_mode' => 1,
+			'allow_non_prefix_auto_match' => 0,
 			'character_veto' => 1,
 			'organizations_min_score' => 2,
 			'locations_min_score' => 2,
@@ -3260,6 +3684,9 @@ class PMM_Plugin {
 		}
 
 		$settings = $defaults;
+		$settings['auto_classify_new_entries'] = !empty($stored['auto_classify_new_entries']) ? 1 : 0;
+		$settings['strict_prefix_review_mode'] = !empty($stored['strict_prefix_review_mode']) ? 1 : 0;
+		$settings['allow_non_prefix_auto_match'] = !empty($stored['allow_non_prefix_auto_match']) ? 1 : 0;
 		$settings['character_veto'] = !empty($stored['character_veto']) ? 1 : 0;
 		$settings['organizations_min_score'] = isset($stored['organizations_min_score']) ? max(1, min(3, (int) $stored['organizations_min_score'])) : $defaults['organizations_min_score'];
 		$settings['locations_min_score'] = isset($stored['locations_min_score']) ? max(1, min(3, (int) $stored['locations_min_score'])) : $defaults['locations_min_score'];
@@ -3276,6 +3703,9 @@ class PMM_Plugin {
 		}
 
 		$current = $this->get_classification_settings_option();
+		$current['auto_classify_new_entries'] = !empty($request['pmm_auto_classify_new_entries']) ? 1 : 0;
+		$current['strict_prefix_review_mode'] = !empty($request['pmm_strict_prefix_review_mode']) ? 1 : 0;
+		$current['allow_non_prefix_auto_match'] = !empty($request['pmm_allow_non_prefix_auto_match']) ? 1 : 0;
 		$current['character_veto'] = !empty($request['pmm_character_fact_veto']) ? 1 : 0;
 
 		$map = [
@@ -3320,7 +3750,9 @@ class PMM_Plugin {
 		}
 
 		$current = $this->get_global_entity_report_settings_option();
-		$current['include_mentions'] = !empty($request['pmm_global_entity_include_mentions']) ? 1 : 0;
+		if (isset($request['pmm_global_entity_include_mentions'])) {
+			$current['include_mentions'] = !empty($request['pmm_global_entity_include_mentions']) ? 1 : 0;
+		}
 		return $current;
 	}
 
@@ -3685,17 +4117,18 @@ class PMM_Plugin {
 
 				$entity_name = (strpos((string) $entity, '__') === 0) ? '' : (string) $entity;
 				foreach ($items as $entry) {
-					$entry = PMM_Utils::normalize_bullet((string) $entry);
-					if ($entry === '') {
+					$entry_raw = (string) $entry;
+					$entry_for_detection = PMM_Utils::normalize_bullet($entry_raw);
+					if ($entry_for_detection === '') {
 						continue;
 					}
 
-					$key = $this->build_entry_rule_key((string) $section, $entity_name, $entry);
+					$key = $this->build_entry_rule_key((string) $section, $entity_name, $entry_raw);
 					if (isset($hidden[$key])) {
 						continue;
 					}
 
-					$suggestion = $this->detect_reclassification_suggestion((string) $section, $entity_name, $entry, $settings);
+					$suggestion = $this->detect_reclassification_suggestion((string) $section, $entity_name, $entry_for_detection, $settings);
 					if ($suggestion === null) {
 						continue;
 					}
@@ -3704,7 +4137,7 @@ class PMM_Plugin {
 						'id' => md5($key),
 						'original_section' => (string) $section,
 						'original_entity' => $entity_name,
-						'original_entry' => $entry,
+						'original_entry' => $entry_raw,
 						'target_section' => $suggestion['section'],
 						'target_entity' => $suggestion['entity'],
 						'reason' => $suggestion['reason'],
@@ -3883,13 +4316,14 @@ class PMM_Plugin {
 
 				$entity_name = (strpos((string) $entity, '__') === 0) ? '' : (string) $entity;
 				foreach ((array) $items as $entry) {
-					$entry = PMM_Utils::normalize_bullet((string) $entry);
-					if ($entry === '') {
+					$entry_raw = (string) $entry;
+					$entry_for_detection = PMM_Utils::normalize_bullet($entry_raw);
+					if ($entry_for_detection === '') {
 						continue;
 					}
 
 					++$evaluated;
-					$suggestion = $this->detect_reclassification_suggestion((string) $section, $entity_name, $entry, $settings);
+					$suggestion = $this->detect_reclassification_suggestion((string) $section, $entity_name, $entry_for_detection, $settings);
 					if ($suggestion === null) {
 						continue;
 					}
@@ -3914,7 +4348,7 @@ class PMM_Plugin {
 							'from_entity' => $entity_name,
 							'to_section' => $target_section,
 							'to_entity' => $target_entity,
-							'entry' => $entry,
+							'entry' => $entry_raw,
 							'confidence' => $confidence,
 							'reason' => isset($suggestion['reason']) ? (string) $suggestion['reason'] : '',
 						];
@@ -3924,7 +4358,7 @@ class PMM_Plugin {
 						continue;
 					}
 
-					if ($this->move_entry_in_cleaned($cleaned, (string) $section, $entity_name, $entry, $target_section, $target_entity, $entry)) {
+					if ($this->move_entry_in_cleaned($cleaned, (string) $section, $entity_name, $entry_raw, $target_section, $target_entity, $entry_raw)) {
 						++$moved;
 					}
 				}
@@ -4060,12 +4494,12 @@ class PMM_Plugin {
 	private function move_entry_in_cleaned(&$cleaned, $from_section, $from_entity, $from_entry, $to_section, $to_entity, $to_entry) {
 		$from_section = trim((string) $from_section);
 		$from_entity = trim((string) $from_entity);
-		$from_entry = PMM_Utils::normalize_bullet((string) $from_entry);
+		$from_entry = (string) $from_entry;
 		$to_section = trim((string) $to_section);
 		$to_entity = trim((string) $to_entity);
-		$to_entry = PMM_Utils::normalize_bullet((string) $to_entry);
+		$to_entry = (string) $to_entry;
 
-		if ($from_section === '' || $to_section === '' || $from_entry === '' || $to_entry === '') {
+		if ($from_section === '' || $to_section === '' || trim($from_entry) === '' || trim($to_entry) === '') {
 			return false;
 		}
 
@@ -4083,12 +4517,12 @@ class PMM_Plugin {
 		$removed = false;
 		$new_source = [];
 		foreach ($source_items as $item) {
-			$item_text = PMM_Utils::normalize_bullet((string) $item);
+			$item_text = (string) $item;
 			if (!$removed && PMM_Utils::fingerprint($item_text) === $target_entry_fp) {
 				$removed = true;
 				continue;
 			}
-			$new_source[] = $item_text;
+			$new_source[] = $item;
 		}
 
 		if (!$removed) {
@@ -4123,8 +4557,8 @@ class PMM_Plugin {
 	private function remove_entry_from_cleaned(&$cleaned, $section, $entity, $entry) {
 		$section = trim((string) $section);
 		$entity = trim((string) $entity);
-		$entry = PMM_Utils::normalize_bullet((string) $entry);
-		if ($section === '' || $entry === '') {
+		$entry = (string) $entry;
+		if ($section === '' || trim($entry) === '') {
 			return false;
 		}
 
@@ -4141,12 +4575,12 @@ class PMM_Plugin {
 		$removed = false;
 		$new_items = [];
 		foreach ((array) $cleaned[$section][$key] as $item) {
-			$item_text = PMM_Utils::normalize_bullet((string) $item);
+			$item_text = (string) $item;
 			if (!$removed && PMM_Utils::fingerprint($item_text) === $target_fp) {
 				$removed = true;
 				continue;
 			}
-			$new_items[] = $item_text;
+			$new_items[] = $item;
 		}
 
 		if (!$removed) {
@@ -4161,11 +4595,11 @@ class PMM_Plugin {
 		return true;
 	}
 
-	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null) {
+	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null, $remove_unreferenced = false, $known_entities = [], $unreferenced_threshold = 0.60) {
 		$items = array_values(array_filter(array_map(static function($item) {
-			return PMM_Utils::normalize_bullet((string) $item);
+			return (string) $item;
 		}, (array) $items), static function($item) {
-			return $item !== '';
+			return trim((string) $item) !== '';
 		}));
 
 		if (empty($items)) {
@@ -4226,12 +4660,62 @@ class PMM_Plugin {
 			$deduped = $fresh;
 		}
 
+		if ($remove_unreferenced && !empty($known_entities)) {
+			$referenced = [];
+			foreach ($deduped as $entry) {
+				if ($this->entry_references_any_known_entity($entry, $known_entities, $unreferenced_threshold)) {
+					$referenced[] = $entry;
+					continue;
+				}
+				++$stats['unreferenced_removed'];
+				if (is_array($report)) {
+					$report['unreferenced_removed'][] = $entry;
+				}
+			}
+			$deduped = $referenced;
+		}
+
 		if (count($deduped) > $max_keep) {
 			$stats['trimmed'] = count($deduped) - $max_keep;
 			$deduped = $this->select_entries_for_prune_keep($deduped, $max_keep, $stats, $report);
 		}
 
 		return array_values($deduped);
+	}
+
+	private function collect_known_entity_names($cleaned) {
+		$names = [];
+		foreach ($this->entity_sections() as $section) {
+			if (empty($cleaned[$section]) || !is_array($cleaned[$section])) {
+				continue;
+			}
+			foreach ($cleaned[$section] as $entity => $items) {
+				if (strpos((string) $entity, '__') === 0) {
+					continue;
+				}
+				$name = trim((string) $entity);
+				if ($name !== '') {
+					$names[$name] = true;
+				}
+			}
+		}
+
+		return array_keys($names);
+	}
+
+	private function entry_references_any_known_entity($entry, $known_entities, $threshold) {
+		$entry = (string) $entry;
+		if (trim($entry) === '' || empty($known_entities)) {
+			return false;
+		}
+
+		foreach ((array) $known_entities as $entity_name) {
+			if (PMM_Utils::contains_name_score($entry, (string) $entity_name) >= (float) $threshold) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private function entries_are_similar($a, $b, $threshold) {
@@ -4295,18 +4779,19 @@ class PMM_Plugin {
 		$scored = [];
 		$critical_count = 0;
 		foreach (array_values((array) $entries) as $idx => $entry) {
-			$entry = PMM_Utils::normalize_bullet((string) $entry);
-			if ($entry === '') {
+			$entry_raw = (string) $entry;
+			$entry_for_scoring = PMM_Utils::normalize_bullet($entry_raw);
+			if ($entry_for_scoring === '') {
 				continue;
 			}
 
-			$score_data = $this->entry_prune_importance_score($entry, $idx, $total);
+			$score_data = $this->entry_prune_importance_score($entry_for_scoring, $idx, $total);
 			if ($score_data['critical']) {
 				++$critical_count;
 			}
 			$scored[] = [
 				'index' => $idx,
-				'entry' => $entry,
+				'entry' => $entry_raw,
 				'score' => $score_data['score'],
 				'critical' => $score_data['critical'],
 			];
@@ -4333,17 +4818,17 @@ class PMM_Plugin {
 
 		$kept = [];
 		foreach (array_values((array) $entries) as $idx => $entry) {
-			$entry = PMM_Utils::normalize_bullet((string) $entry);
-			if ($entry === '') {
+			$entry_raw = (string) $entry;
+			if (trim($entry_raw) === '') {
 				continue;
 			}
 			if (!isset($selected_indexes[$idx])) {
 				if (is_array($report)) {
-					$report['trimmed'][] = $entry;
+					$report['trimmed'][] = $entry_raw;
 				}
 				continue;
 			}
-			$kept[] = $entry;
+			$kept[] = $entry_raw;
 		}
 
 		return $kept;
@@ -4569,6 +5054,127 @@ class PMM_Plugin {
 		return $lookup;
 	}
 
+	private function build_alias_substitution_pairs($alias_rules) {
+		$pairs = [];
+		foreach ((array) $alias_rules as $source => $canonical) {
+			$source = trim((string) $source);
+			$canonical = trim((string) $canonical);
+			if ($source === '' || $canonical === '') {
+				continue;
+			}
+
+			// Skip fingerprint-style keys because they are not intended for direct text replacement.
+			if (strpos($source, ' ') === false && $source === PMM_Utils::name_fingerprint($source) && !preg_match('/[A-Z]/', $source)) {
+				continue;
+			}
+
+			if (mb_strtolower($source) === mb_strtolower($canonical)) {
+				continue;
+			}
+
+			$pairs[] = [
+				'alias' => $source,
+				'canonical' => $canonical,
+			];
+		}
+
+		if (empty($pairs)) {
+			return [];
+		}
+
+		usort($pairs, static function ($a, $b) {
+			return mb_strlen((string) $b['alias']) - mb_strlen((string) $a['alias']);
+		});
+
+		return $pairs;
+	}
+
+	private function apply_alias_substitutions_to_text($text, $pairs) {
+		$text = (string) $text;
+		if ($text === '' || empty($pairs) || !is_array($pairs)) {
+			return $text;
+		}
+
+		foreach ($pairs as $pair) {
+			$alias = isset($pair['alias']) ? trim((string) $pair['alias']) : '';
+			$canonical = isset($pair['canonical']) ? trim((string) $pair['canonical']) : '';
+			if ($alias === '' || $canonical === '') {
+				continue;
+			}
+
+			$pattern = '/(?<![\\w\-])' . preg_quote($alias, '/') . '(?![\\w\-])/ui';
+
+			if ($this->is_ambiguous_single_token_person_alias($alias, $canonical)) {
+				$pattern = '/(?<![\\w\-])' . preg_quote($alias, '/') . '(?![\\w\-])(?!\\s+(?:technologies|technology|systems|labs?|industries|inc|corp(?:oration)?|company|group|holdings|logistics|transport(?:ation)?|transit|motors|dynamics)\\b)/ui';
+			}
+
+			// Prevent repeated expansion when canonical starts with the alias,
+			// e.g. "Genesis" -> "Genesis Technologies" across multiple passes.
+			if (preg_match('/^' . preg_quote($alias, '/') . '(?:(\\s+.+))?$/ui', $canonical, $m) === 1) {
+				$suffix = isset($m[1]) ? trim((string) $m[1]) : '';
+				if ($suffix !== '') {
+					$pattern = '/(?<![\\w\-])' . preg_quote($alias, '/') . '(?![\\w\-])(?!\\s+' . preg_quote($suffix, '/') . '(?![\\w\-]))/ui';
+				}
+			}
+
+			$updated = preg_replace($pattern, $canonical, $text);
+			if ($updated === null) {
+				continue;
+			}
+			$text = $updated;
+		}
+
+		return $text;
+	}
+
+	private function is_ambiguous_single_token_person_alias($alias, $canonical) {
+		$alias = trim((string) $alias);
+		$canonical = trim((string) $canonical);
+
+		if ($alias === '' || $canonical === '') {
+			return false;
+		}
+
+		if (preg_match('/\s/u', $alias) === 1) {
+			return false;
+		}
+
+		return $this->is_person_like_name($canonical);
+	}
+
+	private function is_person_like_name($name) {
+		$name = trim((string) $name);
+		if ($name === '') {
+			return false;
+		}
+
+		$parts = preg_split('/\s+/u', $name);
+		if (!is_array($parts) || count($parts) < 2) {
+			return false;
+		}
+
+		foreach ($parts as $part) {
+			$part = trim((string) $part);
+			if ($part === '') {
+				return false;
+			}
+			if ($this->is_organization_indicator_word($part)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private function is_organization_indicator_word($word) {
+		$word = mb_strtolower(trim((string) $word));
+		if ($word === '') {
+			return false;
+		}
+
+		return preg_match('/^(technologies|technology|systems?|labs?|industries|inc|corp|corporation|company|group|holdings|logistics|transport|transportation|transit|motors|dynamics)$/u', $word) === 1;
+	}
+
 	private function build_similarity_pair_key($section, $a, $b) {
 		$left = PMM_Utils::name_fingerprint($a);
 		$right = PMM_Utils::name_fingerprint($b);
@@ -4588,16 +5194,31 @@ class PMM_Plugin {
 		return ($score_a >= $score_b) ? (string) $a : (string) $b;
 	}
 
+	private function pick_canonical_name($a, $b) {
+		$a = trim((string) $a);
+		$b = trim((string) $b);
+
+		if ($a === '') {
+			return $b;
+		}
+
+		if ($b === '') {
+			return $a;
+		}
+
+		return $this->choose_canonical_name($a, $b);
+	}
+
 	private function valid_sections() {
 		return ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
 	}
 
 	private function entity_sections() {
-		return ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
+		return ['Characters', 'Organizations', 'Locations'];
 	}
 
 	private function section_level_sections() {
-		return ['Notes', 'Relationships', 'NSFW', 'World Building'];
+		return ['Notes', 'Relationships', 'NSFW', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'];
 	}
 
 	private function start_reprocess_from_last_output($rescan_sections = null, $rescan_confidence = null, $rescan_preview_only = null) {
@@ -4608,7 +5229,7 @@ class PMM_Plugin {
 
 		$content = (string) $data['content'];
 		$mode = isset($data['stats']['mode']) ? (string) $data['stats']['mode'] : 'balanced';
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'md';
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
 		$filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
 
 		$drop_sequences = get_option('pmm_drop_sequences', []);
@@ -4662,7 +5283,7 @@ class PMM_Plugin {
 			'total_lines' => $this->count_file_lines($source_path),
 			'line_batch_size' => $this->line_batch_size,
 			'context' => [
-				'section' => 'Notes',
+				'section' => 'New Entries',
 				'entity' => null,
 			],
 			'parsed' => $this->empty_data_template(),

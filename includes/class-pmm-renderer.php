@@ -11,9 +11,12 @@ class PMM_Renderer {
 		'Organizations',
 		'Locations',
 		'Technology / Systems',
+		'Vehicles / Transportation',
+		'World Building',
 		'Relationships',
 		'NSFW',
 		'Notes',
+		'New Entries',
 	];
 
 	public function render($data, $format = 'md') {
@@ -26,16 +29,12 @@ class PMM_Renderer {
 
 			$lines[] = '# ' . $section;
 
-			if (in_array($section, ['Relationships', 'NSFW', 'Notes'], true)) {
-				foreach (($data[$section]['__entries__'] ?? []) as $entry) {
+			if (in_array($section, ['Relationships', 'NSFW', 'Notes', 'World Building', 'Technology / Systems', 'Vehicles / Transportation', 'New Entries'], true)) {
+				$section_items = $this->section_level_items_from_bucket(isset($data[$section]) && is_array($data[$section]) ? $data[$section] : []);
+				foreach ($section_items as $entry) {
 					$lines[] = '- ' . $entry;
+					$lines[] = '';
 				}
-
-				foreach (($data[$section]['__unassigned__'] ?? []) as $entry) {
-					$lines[] = '- ' . $entry;
-				}
-
-				$lines[] = '';
 				continue;
 			}
 
@@ -48,8 +47,8 @@ class PMM_Renderer {
 					$lines[] = 'Unsorted';
 					foreach ($bullets as $bullet) {
 						$lines[] = '- ' . $bullet;
+						$lines[] = '';
 					}
-					$lines[] = '';
 					continue;
 				}
 
@@ -60,8 +59,8 @@ class PMM_Renderer {
 				$lines[] = $entity;
 				foreach ($bullets as $bullet) {
 					$lines[] = '- ' . $bullet;
+					$lines[] = '';
 				}
-				$lines[] = '';
 			}
 		}
 
@@ -72,5 +71,34 @@ class PMM_Renderer {
 		}
 
 		return $output;
+	}
+
+	private function section_level_items_from_bucket($section_bucket) {
+		if (!is_array($section_bucket)) {
+			return [];
+		}
+
+		$items = [];
+		$reserved = ['__entries__', '__unassigned__'];
+
+		foreach ($reserved as $key) {
+			if (!isset($section_bucket[$key]) || !is_array($section_bucket[$key])) {
+				continue;
+			}
+			foreach ($section_bucket[$key] as $item) {
+				$items[] = (string) $item;
+			}
+		}
+
+		foreach ($section_bucket as $key => $value) {
+			if (in_array((string) $key, $reserved, true) || strpos((string) $key, '__') === 0 || !is_array($value)) {
+				continue;
+			}
+			foreach ($value as $item) {
+				$items[] = (string) $item;
+			}
+		}
+
+		return $items;
 	}
 }

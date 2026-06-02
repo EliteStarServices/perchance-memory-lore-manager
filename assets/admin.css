@@ -18,3 +18,33 @@
 .pmm-wrap .pmm-stats {
 	margin: 0 0 1em 1.2em;
 }
+
+.pmm-wrap .pmm-collapsible-section > summary {
+	cursor: pointer;
+	font-size: 16px;
+	line-height: 1.4;
+	padding: 2px 0;
+	margin-bottom: 8px;
+}
+
+.pmm-wrap .pmm-collapsible-section > summary:hover {
+	color: #135e96;
+}
+
+.pmm-wrap .pmm-collapsible-section[open] > summary {
+	margin-bottom: 12px;
+}
+
+.pmm-wrap .pmm-collapsible-root > summary {
+	font-size: 17px;
+	font-weight: 600;
+	margin-bottom: 10px;
+}
+
+.pmm-wrap .pmm-collapsible-group > .pmm-collapsible-section {
+	margin: 12px 0;
+}
+
+.pmm-wrap .pmm-collapsible-group > .pmm-collapsible-section > summary {
+	font-size: 15px;
+}
