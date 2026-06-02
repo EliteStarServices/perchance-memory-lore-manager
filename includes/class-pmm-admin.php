@@ -48,6 +48,7 @@ class PMM_Admin {
 		$entity_truncated = isset($_GET['pmm_entity_truncated']) ? (int) $_GET['pmm_entity_truncated'] : 0;
 		$entity_expected_count = isset($_GET['pmm_entity_expected_count']) ? (int) $_GET['pmm_entity_expected_count'] : 0;
 		$raw_previewed = isset($_GET['pmm_raw_previewed']) ? (int) $_GET['pmm_raw_previewed'] : -1;
+		$raw_preview_saved = isset($_GET['pmm_raw_preview_saved']) ? (int) $_GET['pmm_raw_preview_saved'] : -1;
 		$raw_staged = isset($_GET['pmm_raw_staged']) ? (int) $_GET['pmm_raw_staged'] : -1;
 		$raw_cleared = isset($_GET['pmm_raw_cleared']) ? (int) $_GET['pmm_raw_cleared'] : 0;
 		$entity_updated = isset($_GET['pmm_entity_updated']) ? (int) $_GET['pmm_entity_updated'] : 0;
@@ -177,7 +178,18 @@ class PMM_Admin {
 		if (!is_array($similarity_log)) {
 			$similarity_log = [];
 		}
-		$raw_preview = get_transient('pmm_raw_import_preview_' . get_current_user_id());
+		$raw_preview_key = 'pmm_raw_import_preview_' . get_current_user_id();
+		$raw_preview = get_option($raw_preview_key, null);
+		if (!is_array($raw_preview) || !isset($raw_preview['rows']) || !is_array($raw_preview['rows'])) {
+			$legacy_raw_preview = get_transient($raw_preview_key);
+			if (is_array($legacy_raw_preview) && isset($legacy_raw_preview['rows']) && is_array($legacy_raw_preview['rows'])) {
+				$raw_preview = $legacy_raw_preview;
+				update_option($raw_preview_key, $raw_preview, false);
+				delete_transient($raw_preview_key);
+			} else {
+				$raw_preview = ['raw_text' => '', 'rows' => []];
+			}
+		}
 		$raw_preview_rows = (isset($raw_preview['rows']) && is_array($raw_preview['rows'])) ? $raw_preview['rows'] : [];
 		$raw_preview_text = isset($raw_preview['raw_text']) ? (string) $raw_preview['raw_text'] : '';
 		$raw_confidence_threshold = isset($_GET['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) $_GET['pmm_raw_confidence_threshold'])) : 75;
@@ -195,9 +207,17 @@ class PMM_Admin {
 				++$raw_preview_low_conf;
 			}
 		}
-		$staged_raw_rows = get_transient('pmm_staged_raw_import_' . get_current_user_id());
+		$staged_raw_key = 'pmm_staged_raw_import_' . get_current_user_id();
+		$staged_raw_rows = get_option($staged_raw_key, null);
 		if (!is_array($staged_raw_rows)) {
-			$staged_raw_rows = [];
+			$legacy_staged_raw_rows = get_transient($staged_raw_key);
+			if (is_array($legacy_staged_raw_rows)) {
+				$staged_raw_rows = $legacy_staged_raw_rows;
+				update_option($staged_raw_key, $staged_raw_rows, false);
+				delete_transient($staged_raw_key);
+			} else {
+				$staged_raw_rows = [];
+			}
 		}
 		$staged_raw_rows_text = $this->serialize_staged_raw_import_rows($raw_preview_rows);
 		if ($staged_raw_rows_text === '') {
@@ -538,6 +558,10 @@ class PMM_Admin {
 
 			<?php if ($raw_previewed >= 0) : ?>
 				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Previewed %d raw import entries. Edit the staging table before your next upload or reprocess.', 'perchance-memory-manager'), $raw_previewed)); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ($raw_preview_saved >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Saved edits for %d preview rows. You can safely continue paging without losing this work.', 'perchance-memory-manager'), $raw_preview_saved)); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($raw_staged >= 0) : ?>
@@ -949,7 +973,7 @@ class PMM_Admin {
 							<p class="description" style="margin-top:6px;"><strong><?php esc_html_e('Last confidence staging mode:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html(str_replace('_', ' ', $raw_stage_mode_notice)); ?> (<?php echo esc_html((string) $raw_confidence_threshold); ?>)</p>
 						<?php endif; ?>
 					<?php endif; ?>
-					<p class="description" style="margin-top:10px;"><?php esc_html_e('Editable staging format: Section<TAB>Entity<TAB>Entry text. Leave Entity blank to append to section-level entries like Notes/Relationships/NSFW.', 'perchance-memory-manager'); ?></p>
+					<p class="description" style="margin-top:10px;"><?php esc_html_e('Primary workflow: review and edit rows directly in Preview Assignments, then save page edits as you navigate. This protects work across long review sessions.', 'perchance-memory-manager'); ?></p>
 					<?php if (!empty($raw_preview_rows)) : ?>
 						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
 							<?php wp_nonce_field('pmm_stage_raw_import'); ?>
@@ -973,6 +997,9 @@ class PMM_Admin {
 						<?php wp_nonce_field('pmm_stage_raw_import'); ?>
 						<input type="hidden" name="action" value="pmm_stage_raw_import">
 						<input type="hidden" name="pmm_raw_stage_mode" value="manual">
+						<input type="hidden" name="pmm_raw_preview_nav_page" value="">
+						<input type="hidden" name="pmm_raw_preview_per_page" value="<?php echo esc_attr((string) $raw_preview_per_page); ?>">
+						<input type="hidden" name="pmm_raw_preview_context" value="<?php echo esc_attr(md5((string) $raw_preview_text . '|' . (string) $raw_preview_total)); ?>">
 						<p><input type="file" name="pmm_raw_import_rows_file" accept=".tsv,.txt,.csv"> <span class="description"><?php esc_html_e('Optional: upload edited TSV to replace textarea content.', 'perchance-memory-manager'); ?></span></p>
 						<?php if (!empty($raw_preview_rows)) : ?>
 							<details style="margin:8px 0 12px 0;" open>
@@ -985,18 +1012,27 @@ class PMM_Admin {
 								<?php if ($raw_preview_total_pages > 1) : ?>
 									<p style="margin-top:8px;">
 										<?php if ($raw_preview_page > 1) : ?>
-											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page - 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Previous Page', 'perchance-memory-manager'); ?></a>
+											<button type="submit" class="button pmm-raw-nav-button" data-target-page="<?php echo esc_attr((string) ($raw_preview_page - 1)); ?>"><?php esc_html_e('Save Edits + Previous Page', 'perchance-memory-manager'); ?></button>
 										<?php endif; ?>
 										<span class="description" style="margin:0 8px;"><?php echo esc_html(sprintf(__('Page %1$d of %2$d', 'perchance-memory-manager'), $raw_preview_page, $raw_preview_total_pages)); ?></span>
 										<?php if ($raw_preview_page < $raw_preview_total_pages) : ?>
-											<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_raw_preview_page' => $raw_preview_page + 1, 'pmm_raw_preview_per_page' => $raw_preview_per_page])); ?>"><?php esc_html_e('Next Page', 'perchance-memory-manager'); ?></a>
+											<button type="submit" class="button pmm-raw-nav-button" data-target-page="<?php echo esc_attr((string) ($raw_preview_page + 1)); ?>"><?php esc_html_e('Save Edits + Next Page', 'perchance-memory-manager'); ?></button>
 										<?php endif; ?>
 									</p>
 								<?php endif; ?>
 							</details>
 						<?php endif; ?>
-						<textarea name="pmm_raw_import_rows" rows="14" class="large-text code"><?php echo esc_textarea($staged_raw_rows_text); ?></textarea>
-						<?php submit_button(__('Stage Rows For Next Processing Run', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+						<p style="margin:8px 0;">
+							<button type="button" class="button" id="pmm-raw-sync-table"><?php esc_html_e('Sync Table Into Advanced TSV', 'perchance-memory-manager'); ?></button>
+							<button type="submit" class="button" id="pmm-raw-save-page-edits" data-target-page="<?php echo esc_attr((string) $raw_preview_page); ?>" style="margin-left:6px;"><?php esc_html_e('Save Page Edits', 'perchance-memory-manager'); ?></button>
+							<span id="pmm-raw-sync-status" class="description" style="margin-left:8px;"></span>
+						</p>
+						<details style="margin:8px 0 10px 0;">
+							<summary><strong><?php esc_html_e('Advanced: Tab-Delimited Staging Text (optional)', 'perchance-memory-manager'); ?></strong></summary>
+							<p class="description" style="margin-top:8px;"><?php esc_html_e('You usually do not need this. The editable preview table above is the primary review workflow.', 'perchance-memory-manager'); ?></p>
+							<textarea name="pmm_raw_import_rows" rows="14" class="large-text code"><?php echo esc_textarea($staged_raw_rows_text); ?></textarea>
+						</details>
+						<?php submit_button(__('Stage Rows For Next Processing Run', 'perchance-memory-manager'), 'secondary', 'submit', false, ['id' => 'pmm-raw-stage-submit']); ?>
 					</form>
 					<script>
 						document.addEventListener('DOMContentLoaded', function () {
@@ -1004,10 +1040,46 @@ class PMM_Admin {
 							if (!form) {
 								return;
 							}
-							form.addEventListener('submit', function () {
+
+							var syncButton = document.getElementById('pmm-raw-sync-table');
+							var syncStatus = document.getElementById('pmm-raw-sync-status');
+							var text = form.querySelector('textarea[name="pmm_raw_import_rows"]');
+							var previewContextInput = form.querySelector('input[name="pmm_raw_preview_context"]');
+							var previewContext = previewContextInput ? String(previewContextInput.value || '') : '';
+							var draftKey = 'pmm-raw-review-draft:' + window.location.pathname + ':' + previewContext;
+							var saveDraftTimer = null;
+							var stageModeInput = form.querySelector('input[name="pmm_raw_stage_mode"]');
+							var navPageInput = form.querySelector('input[name="pmm_raw_preview_nav_page"]');
+							var savePageButton = document.getElementById('pmm-raw-save-page-edits');
+							var navButtons = form.querySelectorAll('.pmm-raw-nav-button');
+							var stageSubmit = document.getElementById('pmm-raw-stage-submit');
+
+							function setManualStageMode() {
+								if (stageModeInput) {
+									stageModeInput.value = 'manual';
+								}
+								if (navPageInput) {
+									navPageInput.value = '';
+								}
+							}
+
+							function setSavePreviewPageMode(targetPage) {
+								if (stageModeInput) {
+									stageModeInput.value = 'save_preview_page';
+								}
+								if (navPageInput) {
+									navPageInput.value = String(targetPage || '1');
+								}
+							}
+
+							function syncRowsToTextarea(showStatus) {
 								var rows = form.querySelectorAll('[data-pmm-raw-row]');
 								var lines = [];
 								rows.forEach(function (row) {
+									var removed = row.querySelector('[name$="[removed]"]');
+									if (removed && String(removed.value) === '1') {
+										return;
+									}
 									var section = row.querySelector('[name$="[section]"]');
 									var entity = row.querySelector('[name$="[entity]"]');
 									var bullet = row.querySelector('[name$="[bullet]"]');
@@ -1019,11 +1091,165 @@ class PMM_Admin {
 									var bulletValue = bullet.value.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
 									lines.push(sectionValue + '\t' + entityValue + '\t' + bulletValue);
 								});
-								var text = form.querySelector('textarea[name="pmm_raw_import_rows"]');
-								if (text && lines.length) {
+								if (text) {
 									text.value = lines.join('\n');
 								}
+
+								if (showStatus && syncStatus) {
+									syncStatus.textContent = lines.length
+										? '<?php echo esc_js(__('Advanced TSV updated from preview table.', 'perchance-memory-manager')); ?>'
+										: '<?php echo esc_js(__('No non-empty preview rows found to sync.', 'perchance-memory-manager')); ?>';
+								}
+							}
+
+							function collectTableDraft() {
+								var rows = [];
+								form.querySelectorAll('[data-pmm-raw-row]').forEach(function (row) {
+									var index = row.getAttribute('data-pmm-raw-index') || '';
+									var section = row.querySelector('[name$="[section]"]');
+									var entity = row.querySelector('[name$="[entity]"]');
+									var bullet = row.querySelector('[name$="[bullet]"]');
+									var removed = row.querySelector('[name$="[removed]"]');
+									rows.push({
+										index: String(index),
+										section: section ? String(section.value || '') : '',
+										entity: entity ? String(entity.value || '') : '',
+										bullet: bullet ? String(bullet.value || '') : '',
+										removed: removed ? String(removed.value || '0') : '0'
+									});
+								});
+								return { context: previewContext, rows: rows, savedAt: Date.now() };
+							}
+
+							function saveDraft() {
+								if (!previewContext || !window.localStorage) {
+									return;
+								}
+								try {
+									window.localStorage.setItem(draftKey, JSON.stringify(collectTableDraft()));
+								} catch (error) {
+								}
+							}
+
+							function queueDraftSave() {
+								if (saveDraftTimer) {
+									window.clearTimeout(saveDraftTimer);
+								}
+								saveDraftTimer = window.setTimeout(saveDraft, 250);
+							}
+
+							function applyDraft() {
+								if (!previewContext || !window.localStorage) {
+									return;
+								}
+								var raw = '';
+								try {
+									raw = window.localStorage.getItem(draftKey) || '';
+								} catch (error) {
+									return;
+								}
+								if (!raw) {
+									return;
+								}
+								var draft = null;
+								try {
+									draft = JSON.parse(raw);
+								} catch (error) {
+									return;
+								}
+								if (!draft || draft.context !== previewContext || !Array.isArray(draft.rows)) {
+									return;
+								}
+
+								draft.rows.forEach(function (item) {
+									if (!item || typeof item !== 'object') {
+										return;
+									}
+									var row = form.querySelector('[data-pmm-raw-index="' + String(item.index || '').replace(/"/g, '') + '"]');
+									if (!row) {
+										return;
+									}
+									var section = row.querySelector('[name$="[section]"]');
+									var entity = row.querySelector('[name$="[entity]"]');
+									var bullet = row.querySelector('[name$="[bullet]"]');
+									var removed = row.querySelector('[name$="[removed]"]');
+									if (section && typeof item.section === 'string') {
+										section.value = item.section;
+										section.dispatchEvent(new Event('change'));
+									}
+									if (entity && typeof item.entity === 'string') {
+										entity.value = item.entity;
+									}
+									if (bullet && typeof item.bullet === 'string') {
+										bullet.value = item.bullet;
+									}
+									if (removed && String(item.removed || '0') === '1') {
+										removed.value = '1';
+										row.style.display = 'none';
+									}
+								});
+
+								syncRowsToTextarea(false);
+								if (syncStatus) {
+									syncStatus.textContent = '<?php echo esc_js(__('Recovered unsaved browser draft for this preview page set.', 'perchance-memory-manager')); ?>';
+								}
+							}
+
+							if (syncButton) {
+								syncButton.addEventListener('click', function () {
+									syncRowsToTextarea(true);
+								});
+							}
+
+							if (savePageButton) {
+								savePageButton.addEventListener('click', function () {
+									syncRowsToTextarea(false);
+									saveDraft();
+									setSavePreviewPageMode(savePageButton.getAttribute('data-target-page') || '1');
+								});
+							}
+
+							navButtons.forEach(function (button) {
+								button.addEventListener('click', function () {
+									syncRowsToTextarea(false);
+									saveDraft();
+									setSavePreviewPageMode(button.getAttribute('data-target-page') || '1');
+								});
 							});
+
+							if (stageSubmit) {
+								stageSubmit.addEventListener('click', function () {
+									setManualStageMode();
+								});
+							}
+
+							form.addEventListener('input', function (event) {
+								if (!event.target || event.target.name === 'pmm_raw_import_rows') {
+									return;
+								}
+								syncRowsToTextarea(false);
+								queueDraftSave();
+							});
+
+							form.addEventListener('change', function (event) {
+								if (!event.target || event.target.name === 'pmm_raw_import_rows') {
+									return;
+								}
+								syncRowsToTextarea(false);
+								queueDraftSave();
+							});
+
+							form.addEventListener('submit', function () {
+								syncRowsToTextarea(false);
+								saveDraft();
+							});
+
+							if (!text || !text.value.trim()) {
+								syncRowsToTextarea(false);
+							}
+
+							setManualStageMode();
+							applyDraft();
 						});
 					</script>
 
@@ -2243,6 +2469,194 @@ class PMM_Admin {
 						});
 					</script>
 
+					<script>
+						document.addEventListener('DOMContentLoaded', function () {
+							var storageKeyPrefix = 'pmm-collapsible-state:' + window.location.pathname + ':';
+							var collapsibles = document.querySelectorAll('.pmm-wrap details.pmm-collapsible-section');
+
+							function normalizeLabel(value) {
+								return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+							}
+
+							function directSummaryText(detail) {
+								var summary = detail.querySelector(':scope > summary');
+								if (!summary) {
+									return '';
+								}
+								return normalizeLabel(summary.textContent);
+							}
+
+							function buildCollapsePath(detail) {
+								var parts = [];
+								var current = detail;
+
+								while (current && current.matches && current.matches('details.pmm-collapsible-section')) {
+									parts.unshift(directSummaryText(current));
+									current = current.parentElement ? current.parentElement.closest('details.pmm-collapsible-section') : null;
+								}
+
+								return parts.filter(function (part) { return part !== ''; }).join(' > ');
+							}
+
+							collapsibles.forEach(function (detail) {
+								var path = buildCollapsePath(detail);
+								if (!path) {
+									return;
+								}
+
+								var storageKey = storageKeyPrefix + path;
+								try {
+									var stored = window.localStorage.getItem(storageKey);
+									if (stored === 'open') {
+										detail.open = true;
+									} else if (stored === 'closed') {
+										detail.open = false;
+									}
+								} catch (error) {
+									return;
+								}
+
+								detail.addEventListener('toggle', function () {
+									try {
+										window.localStorage.setItem(storageKey, detail.open ? 'open' : 'closed');
+									} catch (error) {
+									}
+								});
+							});
+						});
+					</script>
+
+					<script>
+						document.addEventListener('DOMContentLoaded', function () {
+							var forms = document.querySelectorAll('form.pmm-review-form[id]');
+							if (!forms.length) {
+								return;
+							}
+
+							function formKey(form) {
+								var stampInput = form.querySelector('input[name="pmm_review_dataset_stamp"]');
+								var stamp = stampInput ? String(stampInput.value || '0') : '0';
+								return 'pmm-review-draft:' + window.location.pathname + ':' + window.location.search + ':' + form.id + ':' + stamp;
+							}
+
+							function draftFields(form) {
+								return Array.prototype.slice.call(form.querySelectorAll('input[name], select[name], textarea[name]')).filter(function (field) {
+									if (!field || !field.name) {
+										return false;
+									}
+									if (field.type === 'file' || field.type === 'submit' || field.type === 'button' || field.type === 'image' || field.type === 'reset') {
+										return false;
+									}
+									return true;
+								});
+							}
+
+							function saveDraft(form) {
+								var fields = draftFields(form);
+								var payload = {
+									fields: fields.map(function (field) {
+										return {
+											name: field.name,
+											type: String(field.type || '').toLowerCase(),
+											value: field.value,
+											checked: !!field.checked
+										};
+									}),
+									savedAt: Date.now()
+								};
+
+								try {
+									window.localStorage.setItem(formKey(form), JSON.stringify(payload));
+								} catch (error) {
+								}
+							}
+
+							function restoreDraft(form) {
+								var raw = '';
+								try {
+									raw = window.localStorage.getItem(formKey(form)) || '';
+								} catch (error) {
+									return;
+								}
+								if (!raw) {
+									return;
+								}
+
+								var payload = null;
+								try {
+									payload = JSON.parse(raw);
+								} catch (error) {
+									return;
+								}
+								if (!payload || !Array.isArray(payload.fields)) {
+									return;
+								}
+
+								var fields = draftFields(form);
+								if (!fields.length || payload.fields.length !== fields.length) {
+									return;
+								}
+
+								for (var i = 0; i < fields.length; i++) {
+									var target = fields[i];
+									var source = payload.fields[i];
+									if (!source || source.name !== target.name) {
+										return;
+									}
+								}
+
+								payload.fields.forEach(function (saved, index) {
+									var field = fields[index];
+									if (!field) {
+										return;
+									}
+
+									if (saved.type === 'checkbox' || saved.type === 'radio') {
+										field.checked = !!saved.checked;
+									}
+									if (typeof saved.value === 'string') {
+										field.value = saved.value;
+									}
+								});
+
+								var status = document.createElement('p');
+								status.className = 'description';
+								status.style.margin = '8px 0';
+								status.textContent = '<?php echo esc_js(__('Recovered unsaved review draft from your browser for this page.', 'perchance-memory-manager')); ?>';
+								form.insertBefore(status, form.firstChild);
+							}
+
+							forms.forEach(function (form) {
+								restoreDraft(form);
+
+								var timer = null;
+								var queueSave = function () {
+									if (timer) {
+										window.clearTimeout(timer);
+									}
+									timer = window.setTimeout(function () {
+										saveDraft(form);
+									}, 250);
+								};
+
+								form.addEventListener('input', queueSave);
+								form.addEventListener('change', queueSave);
+								form.addEventListener('submit', function () {
+									try {
+										window.localStorage.removeItem(formKey(form));
+									} catch (error) {
+									}
+								});
+							});
+
+							window.addEventListener('beforeunload', function () {
+								forms.forEach(function (form) {
+									saveDraft(form);
+								});
+							});
+						});
+					</script>
+
 				</div>
 			<?php endif; ?>
 
@@ -2493,9 +2907,10 @@ class PMM_Admin {
 			echo '<p class="description" style="color:#b45309;">' . esc_html__('Similarity scanning was capped for performance on this large dataset. Results shown here are a high-confidence subset.', 'perchance-memory-manager') . '</p>';
 		}
 		echo '<p class="description">' . esc_html__('Section and entity names are editable. Keep separate hides the original suggestion pair; merge actions save alias rules for future runs.', 'perchance-memory-manager') . '</p>';
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-similarity-review-form">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-similarity-review-form" class="pmm-review-form">';
 		wp_nonce_field('pmm_apply_similarity_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_similarity_review">';
+		echo '<input type="hidden" name="pmm_review_dataset_stamp" value="' . esc_attr((string) ((int) get_option('pmm_latest_version_saved_at', 0))) . '">';
 		echo '<p style="margin:12px 0 8px;">';
 		echo '<label for="pmm-similarity-bulk-action"><strong>' . esc_html__('Bulk action for all rows', 'perchance-memory-manager') . '</strong></label> ';
 		echo '<select id="pmm-similarity-bulk-action" class="regular-text pmm-bulk-action">';
@@ -2588,9 +3003,10 @@ class PMM_Admin {
 			echo '<p>' . esc_html(sprintf(__('Questionable entries: %d found. Review and save decisions.', 'perchance-memory-manager'), $shown_count)) . '</p>';
 		}
 		echo '<p class="description">' . esc_html__('Section, entity, and entry are editable. Use Update entry now to immediately move/edit this line in latest output. Remove adds an output rule for next reprocess.', 'perchance-memory-manager') . '</p>';
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-questionable-review-form">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-questionable-review-form" class="pmm-review-form">';
 		wp_nonce_field('pmm_apply_questionable_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_questionable_review">';
+		echo '<input type="hidden" name="pmm_review_dataset_stamp" value="' . esc_attr((string) ((int) get_option('pmm_latest_version_saved_at', 0))) . '">';
 		echo '<input type="hidden" name="pmm_questionable_expected_count" value="' . esc_attr((string) count($candidates)) . '">';
 		echo '<p style="margin:12px 0 8px;">';
 		echo '<label for="pmm-questionable-bulk-action"><strong>' . esc_html__('Bulk action for all rows', 'perchance-memory-manager') . '</strong></label> ';
@@ -2672,9 +3088,10 @@ class PMM_Admin {
 			echo '<p>' . esc_html(sprintf(__('Reclassification suggestions: %d found. Review before moving anything.', 'perchance-memory-manager'), $shown_count)) . '</p>';
 		}
 		echo '<p class="description">' . esc_html__('This scans the latest processed lore for entries that look better suited to a different section. Move applies immediately to the latest output; Hide suppresses the exact suggestion next time.', 'perchance-memory-manager') . '</p>';
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-reclassification-review-form" class="pmm-review-form">';
 		wp_nonce_field('pmm_apply_reclassification_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_reclassification_review">';
+		echo '<input type="hidden" name="pmm_review_dataset_stamp" value="' . esc_attr((string) ((int) get_option('pmm_latest_version_saved_at', 0))) . '">';
 		echo '<table class="widefat striped" style="margin-top:8px;">';
 		echo '<thead><tr>';
 		echo '<th>' . esc_html__('Current Section', 'perchance-memory-manager') . '</th>';
@@ -2800,9 +3217,10 @@ class PMM_Admin {
 			}
 			echo '</p>';
 		}
-		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+		echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" id="pmm-entity-review-form" class="pmm-review-form">';
 		wp_nonce_field('pmm_apply_entity_review');
 		echo '<input type="hidden" name="action" value="pmm_apply_entity_review">';
+		echo '<input type="hidden" name="pmm_review_dataset_stamp" value="' . esc_attr((string) ((int) get_option('pmm_latest_version_saved_at', 0))) . '">';
 		echo '<input type="hidden" name="pmm_entity_expected_count" value="' . esc_attr((string) count($rows_page)) . '">';
 		echo '<table class="widefat striped" style="margin-top:8px;">';
 		echo '<thead><tr>';
@@ -3188,6 +3606,7 @@ class PMM_Admin {
 	private function render_raw_import_preview_table($rows, $known_entities_by_section = []) {
 		$valid_sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation', 'World Building', 'Relationships', 'NSFW', 'Notes'];
 		echo '<table class="widefat striped"><thead><tr>';
+		echo '<th>' . esc_html__('Review', 'perchance-memory-manager') . '</th>';
 		echo '<th>' . esc_html__('Source', 'perchance-memory-manager') . '</th>';
 		echo '<th>' . esc_html__('Confidence', 'perchance-memory-manager') . '</th>';
 		echo '<th>' . esc_html__('Signal', 'perchance-memory-manager') . '</th>';
@@ -3207,7 +3626,11 @@ class PMM_Admin {
 				$section = 'Notes';
 			}
 
-			echo '<tr data-pmm-raw-row="1">';
+			echo '<tr data-pmm-raw-row="1" data-pmm-raw-index="' . esc_attr((string) $index) . '">';
+			echo '<td style="white-space:nowrap;">';
+			echo '<input type="hidden" class="pmm-raw-removed-flag" name="pmm_raw_table[' . esc_attr((string) $index) . '][removed]" value="0">';
+			echo '<button type="button" class="button-link pmm-raw-remove-row">' . esc_html__('Remove', 'perchance-memory-manager') . '</button>';
+			echo '</td>';
 			echo '<td style="max-width:260px;white-space:pre-wrap;">' . esc_html($source) . '</td>';
 			echo '<td><strong>' . esc_html((string) $confidence) . '%</strong></td>';
 			echo '<td style="max-width:200px;white-space:pre-wrap;">' . esc_html($signal) . '</td>';
@@ -3232,7 +3655,7 @@ class PMM_Admin {
 		}
 
 		echo '</tbody></table>';
-		echo '<script>(function(){var knownBySection=' . wp_json_encode($known_entities_by_section) . ';document.querySelectorAll("tr[data-pmm-raw-row]").forEach(function(row){var section=row.querySelector(".pmm-raw-section");var known=row.querySelector(".pmm-raw-known-entity");var entity=row.querySelector(".pmm-raw-entity");if(!section||!known||!entity){return;}var fill=function(){var list=knownBySection[section.value]||[];known.innerHTML="";var placeholder=document.createElement("option");placeholder.value="";placeholder.textContent="' . esc_js(__('Known entity...', 'perchance-memory-manager')) . '";known.appendChild(placeholder);list.forEach(function(name){var option=document.createElement("option");option.value=name;option.textContent=name;known.appendChild(option);});};known.addEventListener("change",function(){if(known.value){entity.value=known.value;}});section.addEventListener("change",fill);fill();});})();</script>';
+		echo '<script>(function(){var knownBySection=' . wp_json_encode($known_entities_by_section) . ';document.querySelectorAll("tr[data-pmm-raw-row]").forEach(function(row){var section=row.querySelector(".pmm-raw-section");var known=row.querySelector(".pmm-raw-known-entity");var entity=row.querySelector(".pmm-raw-entity");var bullet=row.querySelector("textarea[name$=\"[bullet]\"]");var removed=row.querySelector(".pmm-raw-removed-flag");var removeButton=row.querySelector(".pmm-raw-remove-row");if(section&&known&&entity){var fill=function(){var list=knownBySection[section.value]||[];known.innerHTML="";var placeholder=document.createElement("option");placeholder.value="";placeholder.textContent="' . esc_js(__('Known entity...', 'perchance-memory-manager')) . '";known.appendChild(placeholder);list.forEach(function(name){var option=document.createElement("option");option.value=name;option.textContent=name;known.appendChild(option);});};known.addEventListener("change",function(){if(known.value){entity.value=known.value;}});section.addEventListener("change",fill);fill();}if(removeButton&&removed){removeButton.addEventListener("click",function(){removed.value="1";if(bullet){bullet.value="";}row.style.display="none";});}});})();</script>';
 	}
 
 	private function known_entities_for_raw_review($confirmed_registry, $cleaned_data) {

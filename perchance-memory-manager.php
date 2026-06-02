@@ -4,7 +4,7 @@
  * Plugin URI: https://example.com/
  * Description: Upload, clean, reorganize, and export Perchance AI chat memory files as Markdown or text.
  * Version: 0.1.0
- * Author: Your Name
+ * Author: ESS
  * Author URI: https://example.com/
  * License: GPL2+
  * Text Domain: perchance-memory-manager

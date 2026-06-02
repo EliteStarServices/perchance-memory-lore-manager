@@ -1343,10 +1343,10 @@ class PMM_Plugin {
 
 		$parser = new PMM_Parser();
 		$rows = $parser->preview_raw_import_rows($text, $this->build_existing_entity_seed_from_last_output());
-		set_transient($this->get_raw_import_preview_key(), [
+		$this->set_raw_import_preview_data([
 			'raw_text' => $text,
 			'rows' => $rows,
-		], 30 * MINUTE_IN_SECONDS);
+		]);
 
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
@@ -1363,12 +1363,15 @@ class PMM_Plugin {
 		check_admin_referer('pmm_stage_raw_import');
 		$stage_mode = isset($_POST['pmm_raw_stage_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_raw_stage_mode'])) : 'manual';
 		$confidence_threshold = isset($_POST['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) wp_unslash((string) $_POST['pmm_raw_confidence_threshold']))) : 75;
+		$table_rows = isset($_POST['pmm_raw_table']) && is_array($_POST['pmm_raw_table']) ? (array) wp_unslash($_POST['pmm_raw_table']) : [];
+		$nav_page = isset($_POST['pmm_raw_preview_nav_page']) ? max(1, (int) wp_unslash((string) $_POST['pmm_raw_preview_nav_page'])) : 1;
+		$nav_per_page = isset($_POST['pmm_raw_preview_per_page']) ? max(25, min(300, (int) wp_unslash((string) $_POST['pmm_raw_preview_per_page']))) : 100;
 
 		if (in_array($stage_mode, ['all_preview_rows', 'high_confidence_only', 'low_confidence_only'], true)) {
-			$preview = get_transient($this->get_raw_import_preview_key());
+			$preview = $this->get_raw_import_preview_data();
 			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
 			$rows = $this->filter_preview_rows_by_confidence($preview_rows, $stage_mode, $confidence_threshold);
-			set_transient($this->get_staged_raw_import_key(), $rows, 30 * MINUTE_IN_SECONDS);
+			$this->set_staged_raw_import_rows($rows);
 			$this->mark_output_rules_dirty();
 
 			wp_safe_redirect(add_query_arg([
@@ -1380,20 +1383,44 @@ class PMM_Plugin {
 			exit;
 		}
 
+		if ($stage_mode === 'save_preview_page') {
+			$preview = $this->get_raw_import_preview_data();
+			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
+			$merged_preview_rows = !empty($preview_rows)
+				? $this->merge_preview_rows_with_table_edits($preview_rows, $table_rows)
+				: $this->filter_preview_rows_by_confidence($table_rows, 'all_preview_rows', 1);
+
+			$this->set_raw_import_preview_data([
+				'raw_text' => isset($preview['raw_text']) ? (string) $preview['raw_text'] : '',
+				'rows' => $merged_preview_rows,
+			]);
+
+			$rows = $this->filter_preview_rows_by_confidence($merged_preview_rows, 'all_preview_rows', 1);
+			$this->set_staged_raw_import_rows($rows);
+			$this->mark_output_rules_dirty();
+
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_raw_preview_page' => (string) $nav_page,
+				'pmm_raw_preview_per_page' => (string) $nav_per_page,
+				'pmm_raw_preview_saved' => (string) count($table_rows),
+			], admin_url('admin.php')));
+			exit;
+		}
+
 		$text = isset($_POST['pmm_raw_import_rows']) ? (string) wp_unslash($_POST['pmm_raw_import_rows']) : '';
-		$table_rows = isset($_POST['pmm_raw_table']) && is_array($_POST['pmm_raw_table']) ? (array) wp_unslash($_POST['pmm_raw_table']) : [];
 		$file_text = $this->read_uploaded_text_file('pmm_raw_import_rows_file', 15 * 1024 * 1024);
 		if (!empty($table_rows) && $file_text === '') {
-			$preview = get_transient($this->get_raw_import_preview_key());
+			$preview = $this->get_raw_import_preview_data();
 			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
 			if (!empty($preview_rows)) {
 				$merged_preview_rows = $this->merge_preview_rows_with_table_edits($preview_rows, $table_rows);
 				$rows = $this->filter_preview_rows_by_confidence($merged_preview_rows, 'all_preview_rows', 1);
-				set_transient($this->get_raw_import_preview_key(), [
+				$this->set_raw_import_preview_data([
 					'raw_text' => isset($preview['raw_text']) ? (string) $preview['raw_text'] : '',
 					'rows' => $merged_preview_rows,
-				], 30 * MINUTE_IN_SECONDS);
-				set_transient($this->get_staged_raw_import_key(), $rows, 30 * MINUTE_IN_SECONDS);
+				]);
+				$this->set_staged_raw_import_rows($rows);
 				$this->mark_output_rules_dirty();
 
 				wp_safe_redirect(add_query_arg([
@@ -1411,7 +1438,7 @@ class PMM_Plugin {
 			$text = $file_text;
 		}
 		$rows = $this->parse_staged_raw_import_rows_text($text);
-		set_transient($this->get_staged_raw_import_key(), $rows, 30 * MINUTE_IN_SECONDS);
+		$this->set_staged_raw_import_rows($rows);
 		$this->mark_output_rules_dirty();
 
 		wp_safe_redirect(add_query_arg([
@@ -1428,7 +1455,7 @@ class PMM_Plugin {
 
 		check_admin_referer('pmm_download_raw_import_rows');
 
-		$preview = get_transient($this->get_raw_import_preview_key());
+		$preview = $this->get_raw_import_preview_data();
 		$rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
 		if (empty($rows)) {
 			$rows = $this->get_staged_raw_import_rows();
@@ -1453,9 +1480,9 @@ class PMM_Plugin {
 		}
 
 		check_admin_referer('pmm_clear_raw_import_preview');
-		delete_transient($this->get_raw_import_preview_key());
+		$this->delete_raw_import_preview_data();
 		if (!empty($_POST['pmm_clear_staged_raw_import'])) {
-			delete_transient($this->get_staged_raw_import_key());
+			$this->delete_staged_raw_import_rows();
 			$this->mark_output_rules_dirty();
 		}
 
@@ -2368,7 +2395,7 @@ class PMM_Plugin {
 			'reclassification_preview_rows' => array_slice($reclassification_preview_rows, 0, 120),
 		];
 		$this->clear_output_rules_dirty();
-		delete_transient($this->get_staged_raw_import_key());
+		$this->delete_staged_raw_import_rows();
 
 		$version_meta = $this->persist_versioned_output($output, $state['source_filename'], $state['format']);
 		if (!empty($version_meta['filename'])) {
@@ -2605,9 +2632,68 @@ class PMM_Plugin {
 		return 'pmm_staged_raw_import_' . get_current_user_id();
 	}
 
+	private function get_raw_import_preview_data() {
+		$key = $this->get_raw_import_preview_key();
+		$data = get_option($key, null);
+		if (is_array($data) && isset($data['rows']) && is_array($data['rows'])) {
+			return $data;
+		}
+
+		$legacy = get_transient($key);
+		if (is_array($legacy) && isset($legacy['rows']) && is_array($legacy['rows'])) {
+			update_option($key, $legacy, false);
+			delete_transient($key);
+			return $legacy;
+		}
+
+		return [
+			'raw_text' => '',
+			'rows' => [],
+		];
+	}
+
+	private function set_raw_import_preview_data($data) {
+		$key = $this->get_raw_import_preview_key();
+		$payload = [
+			'raw_text' => isset($data['raw_text']) ? (string) $data['raw_text'] : '',
+			'rows' => isset($data['rows']) && is_array($data['rows']) ? array_values($data['rows']) : [],
+			'saved_at' => time(),
+		];
+		update_option($key, $payload, false);
+	}
+
+	private function delete_raw_import_preview_data() {
+		$key = $this->get_raw_import_preview_key();
+		delete_option($key);
+		delete_transient($key);
+	}
+
+	private function set_staged_raw_import_rows($rows) {
+		$key = $this->get_staged_raw_import_key();
+		update_option($key, is_array($rows) ? array_values($rows) : [], false);
+	}
+
+	private function delete_staged_raw_import_rows() {
+		$key = $this->get_staged_raw_import_key();
+		delete_option($key);
+		delete_transient($key);
+	}
+
 	private function get_staged_raw_import_rows() {
-		$rows = get_transient($this->get_staged_raw_import_key());
-		return is_array($rows) ? $rows : [];
+		$key = $this->get_staged_raw_import_key();
+		$rows = get_option($key, null);
+		if (is_array($rows)) {
+			return $rows;
+		}
+
+		$legacy = get_transient($key);
+		if (is_array($legacy)) {
+			update_option($key, $legacy, false);
+			delete_transient($key);
+			return $legacy;
+		}
+
+		return [];
 	}
 
 	private function build_existing_entity_seed_from_last_output() {
@@ -2865,6 +2951,10 @@ class PMM_Plugin {
 			$entity = isset($row['entity']) ? sanitize_text_field((string) $row['entity']) : (string) ($merged[$idx]['entity'] ?? '');
 			$bullet = isset($row['bullet']) ? sanitize_textarea_field((string) $row['bullet']) : (string) ($merged[$idx]['bullet'] ?? '');
 			$bullet = trim((string) $bullet);
+			$removed = isset($row['removed']) ? (int) $row['removed'] : 0;
+			if ($removed === 1) {
+				$bullet = '';
+			}
 
 			$merged[$idx]['section'] = $section;
 			$merged[$idx]['entity'] = $entity;

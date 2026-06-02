@@ -596,6 +596,10 @@ class PMM_Parser {
 		return ['Relationships', 'NSFW', 'Notes', 'World Building', 'Technology / Systems', 'Vehicles / Transportation'];
 	}
 
+	private function entity_match_sections() {
+		return ['Characters', 'Organizations', 'Locations'];
+	}
+
 	private function extract_leading_name($entry) {
 		$entry = trim((string) $entry);
 		if ($entry === '') {
@@ -1336,6 +1340,15 @@ class PMM_Parser {
 			];
 		}
 
+		$exact_mention = $this->exact_entity_mention_target($data, $entry);
+		if ($exact_mention !== null) {
+			return [
+				'section' => $exact_mention['section'],
+				'entity' => $exact_mention['entity'],
+				'bullet' => PMM_Utils::normalize_bullet((string) $entry),
+			];
+		}
+
 		if (empty($this->classification_settings['allow_non_prefix_auto_match'])) {
 			return null;
 		}
@@ -1347,7 +1360,7 @@ class PMM_Parser {
 		];
 		$strong_matches = 0;
 
-		foreach (['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'] as $section) {
+		foreach ($this->entity_match_sections() as $section) {
 			if (empty($data[$section]) || !is_array($data[$section])) {
 				continue;
 			}
@@ -1399,7 +1412,7 @@ class PMM_Parser {
 
 		$best = null;
 		$tie = false;
-		$sections = ['Characters', 'Organizations', 'Locations', 'Technology / Systems', 'Vehicles / Transportation'];
+		$sections = $this->entity_match_sections();
 
 		foreach ($sections as $section) {
 			$names = $this->known_entities_for_section($data, $section);
@@ -1427,6 +1440,51 @@ class PMM_Parser {
 					if ($len === $best['length'] && ($section !== $best['section'] || $entity !== $best['entity'])) {
 						$tie = true;
 					}
+				}
+			}
+		}
+
+		if ($best === null || $tie) {
+			return null;
+		}
+
+		return [
+			'section' => $best['section'],
+			'entity' => $best['entity'],
+		];
+	}
+
+	private function exact_entity_mention_target($data, $entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return null;
+		}
+
+		$best = null;
+		$tie = false;
+		$sections = $this->entity_match_sections();
+
+		foreach ($sections as $section) {
+			$names = $this->known_entities_for_section($data, $section);
+			foreach ($names as $entity) {
+				$entity = trim((string) $entity);
+				if ($entity === '' || !$this->entry_contains_entity_phrase($entry, $entity)) {
+					continue;
+				}
+
+				$len = mb_strlen($entity);
+				if ($best === null || $len > $best['length']) {
+					$best = [
+						'section' => $section,
+						'entity' => $entity,
+						'length' => $len,
+					];
+					$tie = false;
+					continue;
+				}
+
+				if ($len === $best['length'] && ($section !== $best['section'] || $entity !== $best['entity'])) {
+					$tie = true;
 				}
 			}
 		}
@@ -1563,6 +1621,17 @@ class PMM_Parser {
 		}
 
 		$pattern = '/^' . preg_quote($entity_phrase, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]])/iu';
+		return preg_match($pattern, $entry) === 1;
+	}
+
+	private function entry_contains_entity_phrase($entry, $entity_phrase) {
+		$entry = trim((string) $entry);
+		$entity_phrase = trim((string) $entity_phrase);
+		if ($entry === '' || $entity_phrase === '') {
+			return false;
+		}
+
+		$pattern = '/(?<![\w\-])' . preg_quote($entity_phrase, '/') . '(?![\w\-])/iu';
 		return preg_match($pattern, $entry) === 1;
 	}
 
