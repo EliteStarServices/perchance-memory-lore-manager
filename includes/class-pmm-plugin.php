@@ -28,9 +28,13 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_process_recent_version', [$this, 'process_recent_version']);
 		add_action('admin_post_pmm_process_batch', [$this, 'process_batch']);
 		add_action('admin_post_pmm_apply_similarity_review', [$this, 'apply_similarity_review']);
+		add_action('admin_post_pmm_reset_similarity_review_queue', [$this, 'reset_similarity_review_queue']);
 		add_action('admin_post_pmm_apply_entity_review', [$this, 'apply_entity_review']);
+		add_action('admin_post_pmm_reset_entity_review_queue', [$this, 'reset_entity_review_queue']);
 		add_action('admin_post_pmm_apply_questionable_review', [$this, 'apply_questionable_review']);
+		add_action('admin_post_pmm_reset_questionable_review_queue', [$this, 'reset_questionable_review_queue']);
 		add_action('admin_post_pmm_apply_reclassification_review', [$this, 'apply_reclassification_review']);
+		add_action('admin_post_pmm_reset_reclassification_review_queue', [$this, 'reset_reclassification_review_queue']);
 		add_action('admin_post_pmm_manage_hidden_entities', [$this, 'manage_hidden_entities']);
 		add_action('admin_post_pmm_preview_raw_import', [$this, 'preview_raw_import']);
 		add_action('admin_post_pmm_stage_raw_import', [$this, 'stage_raw_import']);
@@ -552,15 +556,28 @@ class PMM_Plugin {
 
 		$valid_sections = $this->valid_sections();
 		$applied = 0;
+		$reviewed = 0;
 		$output_rule_changes = 0;
+		$expected_count = isset($_POST['pmm_similarity_expected_count']) ? max(0, (int) wp_unslash((string) $_POST['pmm_similarity_expected_count'])) : 0;
+		$dataset_stamp = isset($_POST['pmm_review_dataset_stamp']) ? max(0, (int) wp_unslash((string) $_POST['pmm_review_dataset_stamp'])) : 0;
+		$queue_filter = isset($_POST['pmm_similarity_queue_filter']) ? sanitize_key((string) wp_unslash((string) $_POST['pmm_similarity_queue_filter'])) : 'pending';
+		if (!in_array($queue_filter, ['pending', 'reviewed', 'all'], true)) {
+			$queue_filter = 'pending';
+		}
+		$queue = $this->get_similarity_review_queue();
 		$log_rows = [];
 		$removals = get_option('pmm_entity_removal_rules', []);
 		$removals = $this->normalize_entity_rule_items($removals);
 		$data = $this->get_last_output_data_for_editing();
 		$cleaned = [];
 		$cleaned_changed = false;
-		foreach ($rows as $row) {
+		foreach ($rows as $row_id => $row) {
 			if (!is_array($row)) {
+				continue;
+			}
+
+			$row_id = sanitize_key((string) $row_id);
+			if ($row_id === '') {
 				continue;
 			}
 
@@ -591,6 +608,14 @@ class PMM_Plugin {
 			if ($action === 'skip') {
 				continue;
 			}
+
+			++$reviewed;
+			$queue[$row_id] = [
+				'status' => 'reviewed',
+				'action' => $action,
+				'stamp' => $dataset_stamp,
+				'updated_at' => time(),
+			];
 
 			$pair_key = $this->build_similarity_pair_key($section, $a, $b);
 			$original_pair_key = $this->build_similarity_pair_key($original_section, $original_a, $original_b);
@@ -666,6 +691,7 @@ class PMM_Plugin {
 		update_option('pmm_alias_rules', $alias_rules, false);
 		update_option('pmm_similarity_ignored_pairs', $ignored, false);
 		update_option('pmm_entity_removal_rules', $removals, false);
+		$this->set_similarity_review_queue($queue);
 		$this->append_similarity_log($log_rows);
 		if ($output_rule_changes > 0) {
 			$this->mark_output_rules_dirty();
@@ -705,7 +731,26 @@ class PMM_Plugin {
 
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
+			'pmm_similarity_queue_filter' => (string) $queue_filter,
 			'pmm_similarity_saved' => (string) $applied,
+			'pmm_similarity_reviewed' => (string) $reviewed,
+			'pmm_similarity_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
+			'pmm_similarity_expected_count' => (string) $expected_count,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function reset_similarity_review_queue() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_reset_similarity_review_queue');
+		update_option($this->similarity_review_queue_option_key(), [], false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_similarity_queue_cleared' => 1,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -885,8 +930,19 @@ class PMM_Plugin {
 		$reviewed = 0;
 		$output_rule_changes = 0;
 		$expected_count = isset($_POST['pmm_entity_expected_count']) ? max(0, (int) wp_unslash((string) $_POST['pmm_entity_expected_count'])) : 0;
-		foreach ($rows as $row) {
+		$dataset_stamp = isset($_POST['pmm_review_dataset_stamp']) ? max(0, (int) wp_unslash((string) $_POST['pmm_review_dataset_stamp'])) : 0;
+		$queue_filter = isset($_POST['pmm_entity_queue_filter']) ? sanitize_key((string) wp_unslash((string) $_POST['pmm_entity_queue_filter'])) : 'pending';
+		if (!in_array($queue_filter, ['pending', 'reviewed', 'all'], true)) {
+			$queue_filter = 'pending';
+		}
+		$queue = $this->get_entity_review_queue();
+		foreach ($rows as $row_id => $row) {
 			if (!is_array($row)) {
+				continue;
+			}
+
+			$row_id = sanitize_key((string) $row_id);
+			if ($row_id === '') {
 				continue;
 			}
 
@@ -899,6 +955,12 @@ class PMM_Plugin {
 			}
 
 			++$reviewed;
+			$queue[$row_id] = [
+				'status' => 'reviewed',
+				'action' => $action,
+				'stamp' => $dataset_stamp,
+				'updated_at' => time(),
+			];
 
 			$key = $this->build_entity_rule_key($section, $name);
 
@@ -934,6 +996,7 @@ class PMM_Plugin {
 		$removals = $this->normalize_entity_rule_items($removals);
 		update_option('pmm_entity_review_hidden', $hidden, false);
 		update_option('pmm_entity_removal_rules', $removals, false);
+		$this->set_entity_review_queue($queue);
 		if ($output_rule_changes > 0) {
 			$this->mark_output_rules_dirty();
 		}
@@ -947,10 +1010,26 @@ class PMM_Plugin {
 
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
+			'pmm_entity_queue_filter' => (string) $queue_filter,
 			'pmm_entity_saved' => (string) $applied,
 			'pmm_entity_reviewed' => (string) $reviewed,
 			'pmm_entity_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
 			'pmm_entity_expected_count' => (string) $expected_count,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function reset_entity_review_queue() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_reset_entity_review_queue');
+		update_option($this->entity_review_queue_option_key(), [], false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_entity_queue_cleared' => 1,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -983,15 +1062,34 @@ class PMM_Plugin {
 		$updated_entries = 0;
 		$output_rule_changes = 0;
 		$expected_count = isset($_POST['pmm_questionable_expected_count']) ? max(0, (int) wp_unslash((string) $_POST['pmm_questionable_expected_count'])) : 0;
+		$dataset_stamp = isset($_POST['pmm_review_dataset_stamp']) ? max(0, (int) wp_unslash((string) $_POST['pmm_review_dataset_stamp'])) : 0;
+		$bulk_apply = !empty($_POST['pmm_questionable_apply_bulk']);
+		$bulk_action = isset($_POST['pmm_questionable_bulk_action']) ? sanitize_key((string) wp_unslash((string) $_POST['pmm_questionable_bulk_action'])) : '';
+		if (!in_array($bulk_action, ['keep', 'hide', 'remove'], true)) {
+			$bulk_action = '';
+		}
+		$queue_filter = isset($_POST['pmm_questionable_queue_filter']) ? sanitize_key((string) wp_unslash((string) $_POST['pmm_questionable_queue_filter'])) : 'pending';
+		if (!in_array($queue_filter, ['pending', 'reviewed', 'all'], true)) {
+			$queue_filter = 'pending';
+		}
+		$queue = $this->get_questionable_review_queue();
 		$data = $this->get_last_output_data_for_editing();
 		$cleaned = [];
 		$cleaned_changed = false;
-		foreach ($rows as $row) {
+		foreach ($rows as $row_id => $row) {
 			if (!is_array($row)) {
 				continue;
 			}
 
+			$row_id = sanitize_key((string) $row_id);
+			if ($row_id === '') {
+				continue;
+			}
+
 			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			if ($bulk_apply && $bulk_action !== '') {
+				$action = $bulk_action;
+			}
 			$section = isset($row['section']) ? sanitize_text_field((string) $row['section']) : '';
 			$entity = isset($row['entity']) ? sanitize_text_field((string) $row['entity']) : '';
 			$entry = isset($row['entry']) ? sanitize_textarea_field((string) $row['entry']) : '';
@@ -1014,6 +1112,12 @@ class PMM_Plugin {
 			}
 
 			++$reviewed;
+			$queue[$row_id] = [
+				'status' => 'reviewed',
+				'action' => $action,
+				'stamp' => $dataset_stamp,
+				'updated_at' => time(),
+			];
 
 			$key = $this->build_entry_rule_key($original_section, $original_entity, $original_entry);
 
@@ -1107,6 +1211,7 @@ class PMM_Plugin {
 		$removals = $this->normalize_entry_rule_items($removals);
 		update_option('pmm_questionable_hidden_entries', $hidden, false);
 		update_option('pmm_entry_removal_rules', $removals, false);
+		$this->set_questionable_review_queue($queue);
 
 		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
 			$renderer = new PMM_Renderer();
@@ -1146,6 +1251,7 @@ class PMM_Plugin {
 
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
+			'pmm_questionable_queue_filter' => (string) $queue_filter,
 			'pmm_questionable_saved' => (string) $applied,
 			'pmm_questionable_reviewed' => (string) $reviewed,
 			'pmm_questionable_changed' => (string) $changed,
@@ -1155,6 +1261,21 @@ class PMM_Plugin {
 			'pmm_questionable_updated' => (string) $updated_entries,
 			'pmm_questionable_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
 			'pmm_questionable_expected_count' => (string) $expected_count,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function reset_questionable_review_queue() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_reset_questionable_review_queue');
+		update_option($this->questionable_review_queue_option_key(), [], false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_questionable_queue_cleared' => 1,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -1180,9 +1301,21 @@ class PMM_Plugin {
 		$moved = 0;
 		$hidden_count = 0;
 		$kept_count = 0;
+		$expected_count = isset($_POST['pmm_reclassification_expected_count']) ? max(0, (int) wp_unslash((string) $_POST['pmm_reclassification_expected_count'])) : 0;
+		$dataset_stamp = isset($_POST['pmm_review_dataset_stamp']) ? max(0, (int) wp_unslash((string) $_POST['pmm_review_dataset_stamp'])) : 0;
+		$queue_filter = isset($_POST['pmm_reclassification_queue_filter']) ? sanitize_key((string) wp_unslash((string) $_POST['pmm_reclassification_queue_filter'])) : 'pending';
+		if (!in_array($queue_filter, ['pending', 'reviewed', 'all'], true)) {
+			$queue_filter = 'pending';
+		}
+		$queue = $this->get_reclassification_review_queue();
 
-		foreach ($rows as $row) {
+		foreach ($rows as $row_id => $row) {
 			if (!is_array($row)) {
+				continue;
+			}
+
+			$row_id = sanitize_key((string) $row_id);
+			if ($row_id === '') {
 				continue;
 			}
 
@@ -1203,6 +1336,12 @@ class PMM_Plugin {
 
 			$key = $this->build_entry_rule_key($original_section, $original_entity, $original_entry);
 			++$reviewed;
+			$queue[$row_id] = [
+				'status' => 'reviewed',
+				'action' => $action,
+				'stamp' => $dataset_stamp,
+				'updated_at' => time(),
+			];
 
 			if ($action === 'hide') {
 				$hidden[$key] = [
@@ -1254,6 +1393,7 @@ class PMM_Plugin {
 		}
 
 		update_option('pmm_reclassification_hidden_entries', $this->normalize_entry_rule_items($hidden), false);
+		$this->set_reclassification_review_queue($queue);
 
 		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
 			$renderer = new PMM_Renderer();
@@ -1282,11 +1422,29 @@ class PMM_Plugin {
 
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
+			'pmm_reclassification_queue_filter' => (string) $queue_filter,
 			'pmm_reclassification_saved' => (string) ($moved + $hidden_count + $kept_count),
 			'pmm_reclassification_reviewed' => (string) $reviewed,
 			'pmm_reclassification_moved' => (string) $moved,
 			'pmm_reclassification_hidden' => (string) $hidden_count,
 			'pmm_reclassification_kept' => (string) $kept_count,
+			'pmm_reclassification_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
+			'pmm_reclassification_expected_count' => (string) $expected_count,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function reset_reclassification_review_queue() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_reset_reclassification_review_queue');
+		update_option($this->reclassification_review_queue_option_key(), [], false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_reclassification_queue_cleared' => 1,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -1362,10 +1520,34 @@ class PMM_Plugin {
 
 		check_admin_referer('pmm_stage_raw_import');
 		$stage_mode = isset($_POST['pmm_raw_stage_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_raw_stage_mode'])) : 'manual';
-		$confidence_threshold = isset($_POST['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) wp_unslash((string) $_POST['pmm_raw_confidence_threshold']))) : 75;
+		$confidence_threshold = isset($_POST['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) wp_unslash((string) $_POST['pmm_raw_confidence_threshold']))) : 92;
+		$raw_review_filter = isset($_POST['pmm_raw_review_filter']) ? sanitize_key((string) wp_unslash((string) $_POST['pmm_raw_review_filter'])) : 'pending';
+		if (!in_array($raw_review_filter, ['pending', 'reviewed', 'all'], true)) {
+			$raw_review_filter = 'pending';
+		}
 		$table_rows = isset($_POST['pmm_raw_table']) && is_array($_POST['pmm_raw_table']) ? (array) wp_unslash($_POST['pmm_raw_table']) : [];
 		$nav_page = isset($_POST['pmm_raw_preview_nav_page']) ? max(1, (int) wp_unslash((string) $_POST['pmm_raw_preview_nav_page'])) : 1;
 		$nav_per_page = isset($_POST['pmm_raw_preview_per_page']) ? max(25, min(300, (int) wp_unslash((string) $_POST['pmm_raw_preview_per_page']))) : 100;
+
+		if (in_array($stage_mode, ['mark_high_confidence_reviewed', 'mark_low_confidence_reviewed', 'mark_all_preview_reviewed'], true)) {
+			$preview = $this->get_raw_import_preview_data();
+			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
+			$marked = $this->mark_preview_rows_reviewed_by_confidence($preview_rows, $stage_mode, $confidence_threshold);
+
+			$this->set_raw_import_preview_data([
+				'raw_text' => isset($preview['raw_text']) ? (string) $preview['raw_text'] : '',
+				'rows' => $marked['rows'],
+			]);
+
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_raw_review_filter' => (string) $raw_review_filter,
+				'pmm_raw_marked_reviewed' => (string) $marked['count'],
+				'pmm_raw_stage_mode' => (string) $stage_mode,
+				'pmm_raw_confidence_threshold' => (string) $confidence_threshold,
+			], admin_url('admin.php')));
+			exit;
+		}
 
 		if (in_array($stage_mode, ['all_preview_rows', 'high_confidence_only', 'low_confidence_only'], true)) {
 			$preview = $this->get_raw_import_preview_data();
@@ -1376,6 +1558,7 @@ class PMM_Plugin {
 
 			wp_safe_redirect(add_query_arg([
 				'page' => 'perchance-memory-manager',
+				'pmm_raw_review_filter' => (string) $raw_review_filter,
 				'pmm_raw_staged' => (string) count($rows),
 				'pmm_raw_stage_mode' => (string) $stage_mode,
 				'pmm_raw_confidence_threshold' => (string) $confidence_threshold,
@@ -1401,6 +1584,7 @@ class PMM_Plugin {
 
 			wp_safe_redirect(add_query_arg([
 				'page' => 'perchance-memory-manager',
+				'pmm_raw_review_filter' => (string) $raw_review_filter,
 				'pmm_raw_preview_page' => (string) $nav_page,
 				'pmm_raw_preview_per_page' => (string) $nav_per_page,
 				'pmm_raw_preview_saved' => (string) count($table_rows),
@@ -1425,6 +1609,7 @@ class PMM_Plugin {
 
 				wp_safe_redirect(add_query_arg([
 					'page' => 'perchance-memory-manager',
+					'pmm_raw_review_filter' => (string) $raw_review_filter,
 					'pmm_raw_staged' => (string) count($rows),
 				], admin_url('admin.php')));
 				exit;
@@ -1443,6 +1628,7 @@ class PMM_Plugin {
 
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
+			'pmm_raw_review_filter' => (string) $raw_review_filter,
 			'pmm_raw_staged' => (string) count($rows),
 		], admin_url('admin.php')));
 		exit;
@@ -2696,6 +2882,250 @@ class PMM_Plugin {
 		return [];
 	}
 
+	private function entity_review_queue_option_key() {
+		return 'pmm_entity_review_queue_' . get_current_user_id();
+	}
+
+	private function get_entity_review_queue() {
+		$stored = get_option($this->entity_review_queue_option_key(), []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach ($stored as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : 0;
+
+			$out[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		return $out;
+	}
+
+	private function set_entity_review_queue($queue) {
+		$normalized = [];
+		foreach ((array) $queue as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : time();
+
+			$normalized[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		if (count($normalized) > 20000) {
+			$normalized = array_slice($normalized, -20000, null, true);
+		}
+
+		update_option($this->entity_review_queue_option_key(), $normalized, false);
+	}
+
+	private function similarity_review_queue_option_key() {
+		return 'pmm_similarity_review_queue_' . get_current_user_id();
+	}
+
+	private function get_similarity_review_queue() {
+		$stored = get_option($this->similarity_review_queue_option_key(), []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach ($stored as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : 0;
+
+			$out[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		return $out;
+	}
+
+	private function set_similarity_review_queue($queue) {
+		$normalized = [];
+		foreach ((array) $queue as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : time();
+
+			$normalized[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		if (count($normalized) > 20000) {
+			$normalized = array_slice($normalized, -20000, null, true);
+		}
+
+		update_option($this->similarity_review_queue_option_key(), $normalized, false);
+	}
+
+	private function reclassification_review_queue_option_key() {
+		return 'pmm_reclassification_review_queue_' . get_current_user_id();
+	}
+
+	private function get_reclassification_review_queue() {
+		$stored = get_option($this->reclassification_review_queue_option_key(), []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach ($stored as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : 0;
+
+			$out[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		return $out;
+	}
+
+	private function set_reclassification_review_queue($queue) {
+		$normalized = [];
+		foreach ((array) $queue as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : time();
+
+			$normalized[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		if (count($normalized) > 20000) {
+			$normalized = array_slice($normalized, -20000, null, true);
+		}
+
+		update_option($this->reclassification_review_queue_option_key(), $normalized, false);
+	}
+
+	private function questionable_review_queue_option_key() {
+		return 'pmm_questionable_review_queue_' . get_current_user_id();
+	}
+
+	private function get_questionable_review_queue() {
+		$stored = get_option($this->questionable_review_queue_option_key(), []);
+		if (!is_array($stored)) {
+			$stored = [];
+		}
+
+		$out = [];
+		foreach ($stored as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : 0;
+
+			$out[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		return $out;
+	}
+
+	private function set_questionable_review_queue($queue) {
+		$normalized = [];
+		foreach ((array) $queue as $id => $row) {
+			$id = sanitize_key((string) $id);
+			if ($id === '' || !is_array($row)) {
+				continue;
+			}
+
+			$status = isset($row['status']) ? sanitize_key((string) $row['status']) : 'reviewed';
+			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
+			$stamp = isset($row['stamp']) ? max(0, (int) $row['stamp']) : 0;
+			$updated_at = isset($row['updated_at']) ? max(0, (int) $row['updated_at']) : time();
+
+			$normalized[$id] = [
+				'status' => ($status !== '' ? $status : 'reviewed'),
+				'action' => $action,
+				'stamp' => $stamp,
+				'updated_at' => $updated_at,
+			];
+		}
+
+		if (count($normalized) > 20000) {
+			$normalized = array_slice($normalized, -20000, null, true);
+		}
+
+		update_option($this->questionable_review_queue_option_key(), $normalized, false);
+	}
+
 	private function build_existing_entity_seed_from_last_output() {
 		$data = $this->empty_data_template();
 		$last = get_transient('pmm_last_output_' . get_current_user_id());
@@ -2929,6 +3359,47 @@ class PMM_Plugin {
 		return $out;
 	}
 
+	private function mark_preview_rows_reviewed_by_confidence($rows, $mode, $threshold) {
+		$updated = (array) $rows;
+		$marked_count = 0;
+
+		foreach ($updated as $idx => $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$bullet = isset($row['bullet']) ? trim((string) $row['bullet']) : '';
+			if ($bullet === '') {
+				continue;
+			}
+
+			$confidence = isset($row['confidence']) ? (int) $row['confidence'] : 50;
+			$apply = false;
+			if ($mode === 'mark_all_preview_reviewed') {
+				$apply = true;
+			} elseif ($mode === 'mark_high_confidence_reviewed') {
+				$apply = ($confidence >= $threshold);
+			} elseif ($mode === 'mark_low_confidence_reviewed') {
+				$apply = ($confidence < $threshold);
+			}
+
+			if (!$apply) {
+				continue;
+			}
+
+			if (empty($row['reviewed'])) {
+				++$marked_count;
+			}
+			$row['reviewed'] = 1;
+			$updated[$idx] = $row;
+		}
+
+		return [
+			'rows' => $updated,
+			'count' => $marked_count,
+		];
+	}
+
 	private function merge_preview_rows_with_table_edits($preview_rows, $table_rows) {
 		$valid_sections = $this->valid_sections();
 		$merged = (array) $preview_rows;
@@ -2952,6 +3423,7 @@ class PMM_Plugin {
 			$bullet = isset($row['bullet']) ? sanitize_textarea_field((string) $row['bullet']) : (string) ($merged[$idx]['bullet'] ?? '');
 			$bullet = trim((string) $bullet);
 			$removed = isset($row['removed']) ? (int) $row['removed'] : 0;
+			$reviewed = isset($row['reviewed']) ? (int) $row['reviewed'] : (isset($merged[$idx]['reviewed']) ? (int) $merged[$idx]['reviewed'] : 0);
 			if ($removed === 1) {
 				$bullet = '';
 			}
@@ -2959,6 +3431,7 @@ class PMM_Plugin {
 			$merged[$idx]['section'] = $section;
 			$merged[$idx]['entity'] = $entity;
 			$merged[$idx]['bullet'] = $bullet;
+			$merged[$idx]['reviewed'] = ($reviewed === 1 ? 1 : 0);
 		}
 
 		return $merged;

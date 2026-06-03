@@ -246,7 +246,7 @@ class PMM_Parser {
 		$parsed = $this->parse_partial("# Raw Import\n" . (string) $raw);
 		$entries = isset($parsed['New Entries']['__entries__']) && is_array($parsed['New Entries']['__entries__']) ? $parsed['New Entries']['__entries__'] : [];
 		$rows = [];
-		$working = $seed;
+		$known_only = $seed;
 
 		foreach ($entries as $entry) {
 			$entry = trim((string) $entry);
@@ -254,8 +254,9 @@ class PMM_Parser {
 				continue;
 			}
 
-			$suggestion = $this->suggest_new_entry_target($working, $entry);
-			$meta = $this->preview_row_confidence_meta($working, $entry, $suggestion);
+			// Keep preview matching anchored to pre-existing entities only.
+			$suggestion = $this->suggest_new_entry_target($known_only, $entry);
+			$meta = $this->preview_row_confidence_meta($known_only, $entry, $suggestion);
 			$rows[] = [
 				'section' => $suggestion['section'],
 				'entity' => $suggestion['entity'],
@@ -264,7 +265,6 @@ class PMM_Parser {
 				'reason' => $meta['reason'],
 				'source' => $entry,
 			];
-			$working = $this->apply_preview_row($working, $suggestion['section'], $suggestion['entity'], $suggestion['bullet']);
 		}
 
 		return $rows;
@@ -1758,6 +1758,10 @@ class PMM_Parser {
 	private function preview_row_confidence_meta($data, $entry, $suggestion) {
 		$section = isset($suggestion['section']) ? (string) $suggestion['section'] : 'Notes';
 		$entity = isset($suggestion['entity']) ? trim((string) $suggestion['entity']) : '';
+		$has_existing_entity_context = false;
+		$leading_exact_entity_match = false;
+		$inline_exact_entity_match = false;
+		$has_additional_nonleading_entity_match = false;
 		$confidence = 35;
 		$reason = 'fallback note classification';
 
@@ -1769,26 +1773,57 @@ class PMM_Parser {
 		}
 
 		if ($entity !== '' && isset($data[$section]) && is_array($data[$section]) && isset($data[$section][$entity])) {
+			$has_existing_entity_context = true;
+			foreach ($this->entity_alias_candidates($entity) as $candidate) {
+				if ($this->entry_starts_with_entity_phrase((string) $entry, $candidate)) {
+					$leading_exact_entity_match = true;
+					$inline_exact_entity_match = true;
+					break;
+				}
+				if ($this->entry_contains_entity_phrase((string) $entry, $candidate)) {
+					$inline_exact_entity_match = true;
+				}
+			}
+			if ($leading_exact_entity_match) {
+				$has_additional_nonleading_entity_match = $this->entry_has_additional_nonleading_exact_entity_match($data, (string) $entry, (string) $section, (string) $entity);
+			}
 			$name_score = (float) PMM_Utils::contains_name_score((string) $entry, $entity);
-			if ($name_score >= 0.90) {
-				return [
-					'confidence' => 96,
-					'reason' => 'strong match to existing entity name',
-				];
+			if ($leading_exact_entity_match) {
+				if (!$has_additional_nonleading_entity_match) {
+					$confidence = 95;
+					$reason = 'unique exact leading match to existing entity name';
+				} else {
+					$confidence = 92;
+					$reason = 'exact leading match plus additional non-leading entity mention';
+				}
+			} elseif ($name_score >= 0.90) {
+				if ($inline_exact_entity_match) {
+					$confidence = 89;
+					$reason = 'exact entity mention appears beyond entry start';
+				} else {
+					$confidence = 86;
+					$reason = 'strong fuzzy match to existing entity name';
+				}
+			} elseif ($name_score >= 0.75) {
+				if ($inline_exact_entity_match) {
+					$confidence = 88;
+					$reason = 'likely match with exact non-leading entity mention';
+				} else {
+					$confidence = 78;
+					$reason = 'likely match to existing entity name';
+				}
+			} else {
+				if ($inline_exact_entity_match) {
+					$confidence = 85;
+					$reason = 'exact non-leading entity mention with weak token overlap';
+				} else {
+					$confidence = 78;
+					$reason = 'assigned to existing entity context';
+				}
 			}
-			if ($name_score >= 0.75) {
-				return [
-					'confidence' => 88,
-					'reason' => 'likely match to existing entity name',
-				];
-			}
-			return [
-				'confidence' => 78,
-				'reason' => 'assigned to existing entity context',
-			];
 		}
 
-		if ($section === 'Characters') {
+		if (!$has_existing_entity_context && $section === 'Characters') {
 			if ($this->extract_character_anchor_name($entry) !== null) {
 				$confidence = 84;
 				$reason = 'character anchor detected in entry';
@@ -1799,27 +1834,27 @@ class PMM_Parser {
 				$confidence = 58;
 				$reason = 'weak character signal';
 			}
-		} elseif ($section === 'Organizations') {
+		} elseif (!$has_existing_entity_context && $section === 'Organizations') {
 			$score = $this->organization_signal_score($entry);
 			$confidence = 48 + ($score * 14);
 			$reason = 'organization keyword signals';
-		} elseif ($section === 'Locations') {
+		} elseif (!$has_existing_entity_context && $section === 'Locations') {
 			$score = $this->location_signal_score($entry);
 			$confidence = 48 + ($score * 14);
 			$reason = 'location keyword signals';
-		} elseif ($section === 'Technology / Systems') {
+		} elseif (!$has_existing_entity_context && $section === 'Technology / Systems') {
 			$score = $this->technology_signal_score($entry);
 			$confidence = 48 + ($score * 14);
 			$reason = 'technology keyword signals';
-		} elseif ($section === 'Vehicles / Transportation') {
+		} elseif (!$has_existing_entity_context && $section === 'Vehicles / Transportation') {
 			$score = $this->vehicle_signal_score($entry);
 			$confidence = 48 + ($score * 14);
 			$reason = 'vehicle keyword signals';
-		} elseif ($section === 'World Building') {
+		} elseif (!$has_existing_entity_context && $section === 'World Building') {
 			$score = $this->world_building_signal_score($entry);
 			$confidence = 50 + ($score * 13);
 			$reason = 'world-building context signal';
-		} elseif ($section === 'Notes') {
+		} elseif (!$has_existing_entity_context && $section === 'Notes') {
 			$confidence = 40;
 			$reason = 'general note fallback';
 		}
@@ -1827,16 +1862,69 @@ class PMM_Parser {
 		if ($entity !== '') {
 			$entity_score = (float) PMM_Utils::contains_name_score((string) $entry, $entity);
 			if ($entity_score >= 0.90) {
-				$confidence = max($confidence, 86);
-				$reason = 'entity name is explicit in entry text';
+				if ($leading_exact_entity_match) {
+					$confidence = max($confidence, 92);
+					$reason = 'entity name is explicit at entry start';
+				} elseif ($inline_exact_entity_match) {
+					$confidence = max($confidence, 88);
+					$reason = 'entity name is explicit in entry text';
+				} else {
+					$confidence = max($confidence, 84);
+					$reason = 'entity-related wording without exact phrase match';
+				}
 			}
 		}
 
 		$confidence = max(10, min(99, (int) round($confidence)));
+		if (!$leading_exact_entity_match && $this->entry_has_multiple_named_subjects((string) $entry)) {
+			$confidence = min($confidence, 84);
+			if (strpos($reason, 'multiple named subjects') === false) {
+				$reason .= ' (multiple named subjects beyond entry start)';
+			}
+		}
+		if ($confidence > 90 && !$leading_exact_entity_match) {
+			$confidence = 90;
+			if (strpos($reason, 'capped') === false) {
+				$reason .= ' (capped without exact phrase match)';
+			}
+		}
+		if ($leading_exact_entity_match) {
+			$confidence = max($confidence, $has_additional_nonleading_entity_match ? 92 : 95);
+		}
 		return [
 			'confidence' => $confidence,
 			'reason' => $reason,
 		];
+	}
+
+	private function entry_has_additional_nonleading_exact_entity_match($data, $entry, $matched_section, $matched_entity) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return false;
+		}
+
+		$matched_fp = PMM_Utils::name_fingerprint((string) $matched_entity);
+		foreach ($this->entity_match_sections() as $section) {
+			$names = $this->known_entities_for_section($data, $section);
+			foreach ($names as $entity) {
+				$entity = trim((string) $entity);
+				if ($entity === '') {
+					continue;
+				}
+
+				if ($section === (string) $matched_section && PMM_Utils::name_fingerprint($entity) === $matched_fp) {
+					continue;
+				}
+
+				foreach ($this->entity_alias_candidates($entity) as $candidate) {
+					if ($this->entry_contains_entity_phrase($entry, $candidate) && !$this->entry_starts_with_entity_phrase($entry, $candidate)) {
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
 	}
 
 	private function apply_preview_row($data, $section, $entity, $bullet) {
