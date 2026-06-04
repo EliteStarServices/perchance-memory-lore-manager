@@ -690,7 +690,34 @@ class PMM_Parser {
 	}
 
 	private function strip_entity_prefix($entry, $entity) {
-		return PMM_Utils::normalize_bullet((string) $entry);
+		$entry = trim((string) $entry);
+		$entity = trim((string) $entity);
+
+		if ($entry === '') {
+			return '';
+		}
+
+		if ($entity === '') {
+			return PMM_Utils::normalize_bullet($entry);
+		}
+
+		$pattern = '/^' . preg_quote($entity, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]])(?:\s*[:;,.!?\-]\s*|\s+)/iu';
+		$stripped = preg_replace($pattern, '', $entry, 1);
+		if (!is_string($stripped) || $stripped === '') {
+			$stripped = $entry;
+		}
+
+		$entity_parts = preg_split('/\s+/u', $entity);
+		$last_entity_part = is_array($entity_parts) ? trim((string) end($entity_parts)) : '';
+		if ($last_entity_part !== '') {
+			$repeat_pattern = '/^' . preg_quote($last_entity_part, '/') . '(?=$|\s|[:;,.!?\-\)\]\}])/iu';
+			$deduped = preg_replace($repeat_pattern, '', ltrim($stripped), 1);
+			if (is_string($deduped) && $deduped !== '') {
+				$stripped = ltrim($deduped);
+			}
+		}
+
+		return PMM_Utils::normalize_bullet($stripped);
 	}
 
 	private function flush_pending_raw_entry(&$data, &$pending_raw_entry) {
@@ -1134,7 +1161,31 @@ class PMM_Parser {
 			}
 		}
 
-		return $entry;
+		return $this->dedupe_immediate_repeated_name_fragments($entry);
+	}
+
+	private function dedupe_immediate_repeated_name_fragments($text) {
+		$text = (string) $text;
+		if ($text === '') {
+			return $text;
+		}
+
+		$updated = $text;
+
+		// Remove adjacent repeated two-word proper-name phrases first.
+		$updated = preg_replace('/\b([A-Z][\p{L}\'\-]{1,}\s+[A-Z][\p{L}\'\-]{1,})(\s+)\1\b/u', '$1', $updated, 1);
+		if (!is_string($updated) || $updated === '') {
+			$updated = $text;
+		}
+
+		// Then remove adjacent repeated single capitalized words, which catches
+		// the common duplicated-surname case like "Cassandra Lee Lee".
+		$collapsed = preg_replace('/\b([A-Z][\p{L}\'\-]{1,})(\s+)\1\b/u', '$1', $updated, 1);
+		if (is_string($collapsed) && $collapsed !== '') {
+			$updated = $collapsed;
+		}
+
+		return $updated;
 	}
 
 	private function apply_single_alias_substitution($text, $alias, $canonical) {
