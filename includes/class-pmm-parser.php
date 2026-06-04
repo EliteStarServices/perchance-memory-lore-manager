@@ -1172,6 +1172,36 @@ class PMM_Parser {
 
 		$updated = $text;
 
+		// Collapse possessive duplication artifacts like
+		// "San Jose Island's Jose Island" -> "San Jose Island's".
+		$updated = preg_replace_callback(
+			'/\b((?:[A-Z][\p{L}\'\-]*\s+){1,4}[A-Z][\p{L}\'\-]*)\s*[\'’]s\s+((?:[A-Z][\p{L}\'\-]*\s+){0,3}[A-Z][\p{L}\'\-]*)\b/u',
+			static function ($m) {
+				$full = isset($m[1]) ? trim((string) $m[1]) : '';
+				$tail = isset($m[2]) ? trim((string) $m[2]) : '';
+				if ($full === '' || $tail === '') {
+					return isset($m[0]) ? (string) $m[0] : '';
+				}
+
+				$parts = preg_split('/\s+/u', $full);
+				if (!is_array($parts) || count($parts) < 2) {
+					return (string) $m[0];
+				}
+
+				$expected_tail = implode(' ', array_slice($parts, 1));
+				if (mb_strtolower($tail) !== mb_strtolower($expected_tail)) {
+					return (string) $m[0];
+				}
+
+				return $full . "'s";
+			},
+			$updated,
+			1
+		);
+		if (!is_string($updated) || $updated === '') {
+			$updated = $text;
+		}
+
 		// Remove adjacent repeated two-word proper-name phrases first.
 		$updated = preg_replace('/\b([A-Z][\p{L}\'\-]{1,}\s+[A-Z][\p{L}\'\-]{1,})(\s+)\1\b/u', '$1', $updated, 1);
 		if (!is_string($updated) || $updated === '') {
@@ -1215,6 +1245,25 @@ class PMM_Parser {
 		$updated = preg_replace($pattern, $canonical, $text);
 		if ($updated === null) {
 			return $text;
+		}
+
+		// If a short alias expands inside a possessive form, avoid duplicated
+		// canonical tails like "San Jose Island's Jose Island".
+		$canonical_parts = preg_split('/\s+/u', $canonical);
+		if (is_array($canonical_parts) && count($canonical_parts) >= 2) {
+			$suffix_parts = array_slice($canonical_parts, 1);
+			$canonical_tail = trim(implode(' ', $suffix_parts));
+			if ($canonical_tail !== '') {
+				$updated_tail = preg_replace(
+					'/\b' . preg_quote($canonical, '/') . '(?:\'|’)s\s+' . preg_quote($canonical_tail, '/') . '(?![\w\-])/ui',
+					$canonical . "'s",
+					$updated,
+					1
+				);
+				if (is_string($updated_tail) && $updated_tail !== '') {
+					$updated = $updated_tail;
+				}
+			}
 		}
 
 		return $updated;
