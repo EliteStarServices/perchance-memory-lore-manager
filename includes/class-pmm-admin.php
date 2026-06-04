@@ -234,6 +234,28 @@ class PMM_Admin {
 		}
 		$raw_preview_rows = (isset($raw_preview['rows']) && is_array($raw_preview['rows'])) ? $raw_preview['rows'] : [];
 		$raw_preview_text = isset($raw_preview['raw_text']) ? (string) $raw_preview['raw_text'] : '';
+		if (!empty($raw_preview_rows)) {
+			$display_sources = [];
+			foreach ($raw_preview_rows as $preview_row) {
+				if (!is_array($preview_row)) {
+					continue;
+				}
+				$bullet = isset($preview_row['bullet']) ? trim((string) $preview_row['bullet']) : '';
+				if ($bullet === '') {
+					continue;
+				}
+				$source = isset($preview_row['source']) ? trim((string) $preview_row['source']) : '';
+				if ($source !== '') {
+					$display_sources[] = $source;
+				}
+			}
+
+			if (!empty($display_sources)) {
+				$raw_preview_text = implode("\n", $display_sources);
+			}
+		}
+		$raw_preview_alias_signature = isset($raw_preview['alias_signature']) ? (string) $raw_preview['alias_signature'] : '';
+		$raw_preview_saved_at = isset($raw_preview['saved_at']) ? (int) $raw_preview['saved_at'] : 0;
 		$raw_confidence_threshold = isset($_GET['pmm_raw_confidence_threshold']) ? max(1, min(99, (int) $_GET['pmm_raw_confidence_threshold'])) : 92;
 		$raw_stage_mode_notice = isset($_GET['pmm_raw_stage_mode']) ? sanitize_key((string) wp_unslash($_GET['pmm_raw_stage_mode'])) : '';
 		$raw_preview_high_conf = 0;
@@ -1125,7 +1147,7 @@ class PMM_Admin {
 						<input type="hidden" name="pmm_raw_review_filter" value="<?php echo esc_attr($raw_review_filter); ?>">
 						<input type="hidden" name="pmm_raw_preview_nav_page" value="">
 						<input type="hidden" name="pmm_raw_preview_per_page" value="<?php echo esc_attr((string) $raw_preview_per_page); ?>">
-						<input type="hidden" name="pmm_raw_preview_context" value="<?php echo esc_attr(md5((string) $raw_preview_text . '|' . (string) $raw_preview_total)); ?>">
+						<input type="hidden" name="pmm_raw_preview_context" value="<?php echo esc_attr(md5((string) $raw_preview_text . '|' . (string) $raw_preview_total . '|' . (string) $raw_preview_alias_signature . '|' . (string) $raw_preview_saved_at)); ?>">
 						<p><input type="file" name="pmm_raw_import_rows_file" accept=".tsv,.txt,.csv"> <span class="description"><?php esc_html_e('Optional: upload edited TSV to replace textarea content.', 'perchance-memory-manager'); ?></span></p>
 						<?php if (!empty($raw_preview_rows)) : ?>
 							<details style="margin:8px 0 12px 0;" open>
@@ -1376,9 +1398,7 @@ class PMM_Admin {
 								saveDraft();
 							});
 
-							if (!text || !text.value.trim()) {
-								syncRowsToTextarea(false);
-							}
+							syncRowsToTextarea(false);
 
 							setManualStageMode();
 							applyDraft();

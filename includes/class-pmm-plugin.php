@@ -768,6 +768,42 @@ class PMM_Plugin {
 		$first_name_exclusions = $this->sanitize_drop_sequences($exclusions_text);
 		update_option('pmm_alias_rules', $rules, false);
 		update_option('pmm_first_name_alias_exclusions', $first_name_exclusions, false);
+
+		$preview = $this->get_raw_import_preview_data();
+		$preview_raw_text = isset($preview['raw_text']) ? trim((string) $preview['raw_text']) : '';
+		if ($preview_raw_text !== '') {
+			$previous_rows = isset($preview['rows']) && is_array($preview['rows']) ? array_values($preview['rows']) : [];
+			$parser = new PMM_Parser();
+			$refreshed_rows = $parser->preview_raw_import_rows($preview_raw_text, $this->build_existing_entity_seed_from_last_output());
+
+			foreach ($refreshed_rows as $index => $row) {
+				if (!isset($previous_rows[$index]) || !is_array($previous_rows[$index])) {
+					continue;
+				}
+
+				$previous_row = $previous_rows[$index];
+				$was_reviewed = !empty($previous_row['reviewed']);
+				$was_removed = !empty($previous_row['removed']);
+				if (!$was_removed) {
+					$previous_bullet = isset($previous_row['bullet']) ? trim((string) $previous_row['bullet']) : '';
+					$was_removed = ($previous_bullet === '');
+				}
+
+				if ($was_reviewed) {
+					$refreshed_rows[$index]['reviewed'] = 1;
+				}
+				if ($was_removed) {
+					$refreshed_rows[$index]['bullet'] = '';
+					$refreshed_rows[$index]['removed'] = 1;
+				}
+			}
+
+			$this->set_raw_import_preview_data([
+				'raw_text' => $preview_raw_text,
+				'rows' => $refreshed_rows,
+			]);
+		}
+
 		$this->mark_output_rules_dirty();
 
 		wp_safe_redirect(add_query_arg([
@@ -2822,20 +2858,118 @@ class PMM_Plugin {
 		$key = $this->get_raw_import_preview_key();
 		$data = get_option($key, null);
 		if (is_array($data) && isset($data['rows']) && is_array($data['rows'])) {
-			return $data;
+			return $this->refresh_raw_import_preview_for_alias_changes($data);
 		}
 
 		$legacy = get_transient($key);
 		if (is_array($legacy) && isset($legacy['rows']) && is_array($legacy['rows'])) {
-			update_option($key, $legacy, false);
+			$data = $this->refresh_raw_import_preview_for_alias_changes($legacy);
+			update_option($key, $data, false);
 			delete_transient($key);
-			return $legacy;
+			return $data;
 		}
 
 		return [
 			'raw_text' => '',
 			'rows' => [],
+			'alias_signature' => $this->raw_import_alias_signature(),
 		];
+	}
+
+	private function refresh_raw_import_preview_for_alias_changes($data) {
+		if (!is_array($data)) {
+			return [
+				'raw_text' => '',
+				'rows' => [],
+				'alias_signature' => $this->raw_import_alias_signature(),
+			];
+		}
+
+		$current_signature = $this->raw_import_alias_signature();
+		$stored_signature = isset($data['alias_signature']) ? (string) $data['alias_signature'] : '';
+		$raw_text = isset($data['raw_text']) ? (string) $data['raw_text'] : '';
+		$rows = isset($data['rows']) && is_array($data['rows']) ? array_values($data['rows']) : [];
+
+		if ($stored_signature === $current_signature) {
+			$data['alias_signature'] = $current_signature;
+			return $data;
+		}
+
+		if (trim($raw_text) === '') {
+			$data['raw_text'] = $raw_text;
+			$data['rows'] = $rows;
+			$data['alias_signature'] = $current_signature;
+			return $data;
+		}
+
+		$parser = new PMM_Parser();
+		$refreshed_rows = $parser->preview_raw_import_rows($raw_text, $this->build_existing_entity_seed_from_last_output());
+
+		foreach ($refreshed_rows as $index => $row) {
+			if (!isset($rows[$index]) || !is_array($rows[$index])) {
+				continue;
+			}
+
+			$previous_row = $rows[$index];
+			$was_reviewed = !empty($previous_row['reviewed']);
+			$was_removed = !empty($previous_row['removed']);
+			if (!$was_removed) {
+				$previous_bullet = isset($previous_row['bullet']) ? trim((string) $previous_row['bullet']) : '';
+				$was_removed = ($previous_bullet === '');
+			}
+
+			if ($was_reviewed) {
+				$refreshed_rows[$index]['reviewed'] = 1;
+			}
+			if ($was_removed) {
+				$refreshed_rows[$index]['bullet'] = '';
+				$refreshed_rows[$index]['removed'] = 1;
+			}
+		}
+
+		$data['rows'] = $refreshed_rows;
+		$data['raw_text'] = $raw_text;
+		$data['alias_signature'] = $current_signature;
+		return $data;
+	}
+
+	private function raw_import_alias_signature() {
+		$rules = get_option('pmm_alias_rules', []);
+		if (!is_array($rules)) {
+			$rules = [];
+		}
+
+		$exclusions = get_option('pmm_first_name_alias_exclusions', []);
+		if (!is_array($exclusions)) {
+			$exclusions = [];
+		}
+
+		$normalized_rules = [];
+		foreach ($rules as $source => $canonical) {
+			$source = trim((string) $source);
+			$canonical = trim((string) $canonical);
+			if ($source === '' || $canonical === '') {
+				continue;
+			}
+			$normalized_rules[mb_strtolower($source)] = $canonical;
+		}
+
+		$normalized_exclusions = [];
+		foreach ($exclusions as $item) {
+			$item = mb_strtolower(trim((string) $item));
+			if ($item === '') {
+				continue;
+			}
+			$normalized_exclusions[] = $item;
+		}
+
+		ksort($normalized_rules);
+		sort($normalized_exclusions, SORT_STRING);
+
+		return md5(wp_json_encode([
+			'rules' => $normalized_rules,
+			'exclusions' => $normalized_exclusions,
+		]));
 	}
 
 	private function set_raw_import_preview_data($data) {
@@ -2843,6 +2977,7 @@ class PMM_Plugin {
 		$payload = [
 			'raw_text' => isset($data['raw_text']) ? (string) $data['raw_text'] : '',
 			'rows' => isset($data['rows']) && is_array($data['rows']) ? array_values($data['rows']) : [],
+			'alias_signature' => $this->raw_import_alias_signature(),
 			'saved_at' => time(),
 		];
 		update_option($key, $payload, false);
@@ -5894,8 +6029,8 @@ class PMM_Plugin {
 				continue;
 			}
 
-			$source = sanitize_text_field($parts[0]);
-			$canonical = sanitize_text_field($parts[1]);
+			$source = $this->normalize_alias_rule_token($parts[0]);
+			$canonical = $this->normalize_alias_rule_token($parts[1]);
 			if ($source !== '' && $canonical !== '') {
 				$rules[$source] = $canonical;
 			}
@@ -5907,8 +6042,8 @@ class PMM_Plugin {
 	private function normalize_alias_rules($rules) {
 		$out = [];
 		foreach ((array) $rules as $source => $canonical) {
-			$source = trim((string) $source);
-			$canonical = trim((string) $canonical);
+			$source = $this->normalize_alias_rule_token($source);
+			$canonical = $this->normalize_alias_rule_token($canonical);
 			if ($source === '' || $canonical === '') {
 				continue;
 			}
@@ -5916,6 +6051,17 @@ class PMM_Plugin {
 		}
 
 		return $out;
+	}
+
+	private function normalize_alias_rule_token($value) {
+		$value = trim((string) $value);
+		$value = preg_replace('/^[\-*•]\s+/u', '', (string) $value);
+
+		if (preg_match('/^(["\'])(.*)\1$/u', $value, $m) === 1) {
+			$value = trim((string) $m[2]);
+		}
+
+		return sanitize_text_field($value);
 	}
 
 	private function append_similarity_log($rows) {

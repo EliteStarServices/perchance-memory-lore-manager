@@ -95,6 +95,11 @@ class PMM_Parser {
 	 */
 	private $first_name_alias_exclusions = [];
 
+	/**
+	 * Preview-only first-name aliases derived from currently known Character entities.
+	 */
+	private $preview_first_name_alias_map = [];
+
 	public function __construct() {
 		$this->alias_map = $this->merge_persisted_alias_rules($this->alias_map);
 		$this->classification_settings = $this->get_classification_settings_option();
@@ -247,24 +252,39 @@ class PMM_Parser {
 		$entries = isset($parsed['New Entries']['__entries__']) && is_array($parsed['New Entries']['__entries__']) ? $parsed['New Entries']['__entries__'] : [];
 		$rows = [];
 		$known_only = $seed;
+		$previous_preview_first_name_alias_map = $this->preview_first_name_alias_map;
+		$this->preview_first_name_alias_map = $this->derive_first_name_alias_map_from_names(
+			$this->known_entities_for_section($known_only, 'Characters'),
+			true
+		);
 
-		foreach ($entries as $entry) {
-			$entry = trim((string) $entry);
-			if ($entry === '') {
-				continue;
+		try {
+			foreach ($entries as $entry) {
+				$source_entry = trim((string) $entry);
+				if ($source_entry === '') {
+					continue;
+				}
+
+				$normalized_entry = $this->apply_alias_substitutions_to_entry($source_entry);
+				$normalized_entry = trim((string) $normalized_entry);
+				if ($normalized_entry === '') {
+					continue;
+				}
+
+				// Keep preview matching anchored to pre-existing entities only.
+				$suggestion = $this->suggest_new_entry_target($known_only, $normalized_entry);
+				$meta = $this->preview_row_confidence_meta($known_only, $normalized_entry, $suggestion);
+				$rows[] = [
+					'section' => $suggestion['section'],
+					'entity' => $suggestion['entity'],
+					'bullet' => $suggestion['bullet'],
+					'confidence' => $meta['confidence'],
+					'reason' => $meta['reason'],
+					'source' => $normalized_entry,
+				];
 			}
-
-			// Keep preview matching anchored to pre-existing entities only.
-			$suggestion = $this->suggest_new_entry_target($known_only, $entry);
-			$meta = $this->preview_row_confidence_meta($known_only, $entry, $suggestion);
-			$rows[] = [
-				'section' => $suggestion['section'],
-				'entity' => $suggestion['entity'],
-				'bullet' => $suggestion['bullet'],
-				'confidence' => $meta['confidence'],
-				'reason' => $meta['reason'],
-				'source' => $entry,
-			];
+		} finally {
+			$this->preview_first_name_alias_map = $previous_preview_first_name_alias_map;
 		}
 
 		return $rows;
@@ -958,12 +978,17 @@ class PMM_Parser {
 	private function derive_first_name_alias_map() {
 		// Only derive automatic first-name aliases from confirmed Character entities.
 		// This prevents first-name-style auto matching from Organizations/Locations.
-		$canonicals = [];
 		$character_entities = isset($this->confirmed_entities['Characters']) && is_array($this->confirmed_entities['Characters'])
 			? $this->confirmed_entities['Characters']
 			: [];
 
-		foreach ($character_entities as $name) {
+		return $this->derive_first_name_alias_map_from_names($character_entities, false);
+	}
+
+	private function derive_first_name_alias_map_from_names($names, $skip_existing_first_name_aliases = true) {
+		$canonicals = [];
+
+		foreach ((array) $names as $name) {
 			$name = trim((string) $name);
 			if ($name === '') {
 				continue;
@@ -1015,6 +1040,9 @@ class PMM_Parser {
 			if (isset($this->alias_map[$first_lc])) {
 				continue;
 			}
+			if ($skip_existing_first_name_aliases && isset($this->first_name_alias_map[$first_lc])) {
+				continue;
+			}
 			$map[$first_lc] = reset($entry['canonicals']);
 		}
 
@@ -1052,6 +1080,15 @@ class PMM_Parser {
 			$aliases[] = ['alias' => $first_display, 'canonical' => $canonical];
 		}
 
+		foreach ($this->preview_first_name_alias_map as $first_lc => $canonical) {
+			$canonical = trim((string) $canonical);
+			$first_display = ucfirst($first_lc);
+			if ($first_display === '' || $canonical === '') {
+				continue;
+			}
+			$aliases[] = ['alias' => $first_display, 'canonical' => $canonical];
+		}
+
 		if (empty($aliases)) {
 			return [];
 		}
@@ -1077,16 +1114,24 @@ class PMM_Parser {
 			return $entry;
 		}
 
-		foreach ($aliases as $pair) {
-			$alias = (string) $pair['alias'];
-			$canonical = (string) $pair['canonical'];
+		// Resolve chained rules (A=>B, B=>C) by applying bounded passes to stability.
+		for ($pass = 0; $pass < 4; $pass++) {
+			$before_pass = $entry;
+			foreach ($aliases as $pair) {
+				$alias = (string) $pair['alias'];
+				$canonical = (string) $pair['canonical'];
 
-			// Skip if the alias already equals the canonical (no substitution needed).
-			if (mb_strtolower($alias) === mb_strtolower($canonical)) {
-				continue;
+				// Skip if the alias already equals the canonical (no substitution needed).
+				if (mb_strtolower($alias) === mb_strtolower($canonical)) {
+					continue;
+				}
+
+				$entry = $this->apply_single_alias_substitution($entry, $alias, $canonical);
 			}
 
-			$entry = $this->apply_single_alias_substitution($entry, $alias, $canonical);
+			if ($entry === $before_pass) {
+				break;
+			}
 		}
 
 		return $entry;
@@ -1204,6 +1249,9 @@ class PMM_Parser {
 		// Fall back to auto-derived first-name map (unambiguous first names only).
 		if (isset($this->first_name_alias_map[$key])) {
 			return $this->first_name_alias_map[$key];
+		}
+		if (isset($this->preview_first_name_alias_map[$key])) {
+			return $this->preview_first_name_alias_map[$key];
 		}
 
 		return $name;
@@ -1597,6 +1645,25 @@ class PMM_Parser {
 			$candidates[] = $alias_name;
 		}
 
+		foreach ($this->preview_first_name_alias_map as $first_lc => $canonical) {
+			$canonical = trim((string) $canonical);
+			if ($canonical === '') {
+				continue;
+			}
+
+			$canonical_fp = PMM_Utils::name_fingerprint($canonical);
+			$canonical_lc = mb_strtolower($canonical);
+			if ($canonical_fp !== $target_fp && $canonical_lc !== $target_lc) {
+				continue;
+			}
+
+			$alias_name = ucfirst((string) $first_lc);
+			if ($alias_name === '' || mb_strlen($alias_name) < 2) {
+				continue;
+			}
+			$candidates[] = $alias_name;
+		}
+
 		$clean = [];
 		foreach ($candidates as $candidate) {
 			$candidate = trim((string) $candidate);
@@ -1705,6 +1772,13 @@ class PMM_Parser {
 	}
 
 	private function suggest_new_entry_target($data, $entry) {
+		$entry = $this->apply_alias_substitutions_to_entry((string) $entry);
+
+		$relationships_candidate = $this->relationship_candidate_target($data, $entry);
+		if ($relationships_candidate !== null) {
+			return $relationships_candidate;
+		}
+
 		$existing = $this->suggest_existing_entity_target($data, $entry);
 		if ($existing !== null) {
 			return $existing;
@@ -1720,6 +1794,48 @@ class PMM_Parser {
 		}
 
 		return $this->guess_new_entry_target($entry);
+	}
+
+	private function relationship_candidate_target($data, $entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return null;
+		}
+
+		$matches = $this->exact_character_match_names($data, $entry);
+		if (count($matches) < 3) {
+			return null;
+		}
+
+		return [
+			'section' => 'Relationships',
+			'entity' => '',
+			'bullet' => $entry,
+			'_forced_relationship' => 1,
+			'_relationship_match_count' => count($matches),
+			'_relationship_matches' => $matches,
+		];
+	}
+
+	private function exact_character_match_names($data, $entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return [];
+		}
+
+		$matches = [];
+		foreach ($this->known_entities_for_section($data, 'Characters') as $name) {
+			$name = trim((string) $name);
+			if ($name === '') {
+				continue;
+			}
+
+			if ($this->entry_contains_entity_phrase($entry, $name)) {
+				$matches[PMM_Utils::name_fingerprint($name)] = $name;
+			}
+		}
+
+		return array_values($matches);
 	}
 
 	private function mentioned_character_target($data, $entry) {
@@ -1758,6 +1874,7 @@ class PMM_Parser {
 	private function preview_row_confidence_meta($data, $entry, $suggestion) {
 		$section = isset($suggestion['section']) ? (string) $suggestion['section'] : 'Notes';
 		$entity = isset($suggestion['entity']) ? trim((string) $suggestion['entity']) : '';
+		$forced_relationship = !empty($suggestion['_forced_relationship']);
 		$has_existing_entity_context = false;
 		$leading_exact_entity_match = false;
 		$inline_exact_entity_match = false;
@@ -1769,6 +1886,22 @@ class PMM_Parser {
 			return [
 				'confidence' => 15,
 				'reason' => 'left in New Entries for manual routing',
+			];
+		}
+
+		if ($forced_relationship) {
+			$relationship_match_count = isset($suggestion['_relationship_match_count']) ? (int) $suggestion['_relationship_match_count'] : count($this->exact_character_match_names($data, (string) $entry));
+			return [
+				'confidence' => 90,
+				'reason' => sprintf('forced relationship: %d unique exact known-character matches after alias rules', max(3, $relationship_match_count)),
+			];
+		}
+
+		if ($section === 'Relationships') {
+			$relationship_match_count = isset($suggestion['_relationship_match_count']) ? (int) $suggestion['_relationship_match_count'] : count($this->exact_character_match_names($data, (string) $entry));
+			return [
+				'confidence' => 90,
+				'reason' => sprintf('exact matches to %d unique known characters after alias rules suggest relationship entry', max(3, $relationship_match_count)),
 			];
 		}
 
@@ -1825,34 +1958,34 @@ class PMM_Parser {
 
 		if (!$has_existing_entity_context && $section === 'Characters') {
 			if ($this->extract_character_anchor_name($entry) !== null) {
-				$confidence = 84;
+				$confidence = 74;
 				$reason = 'character anchor detected in entry';
 			} elseif ($this->looks_like_character_fact($entry)) {
-				$confidence = 70;
+				$confidence = 68;
 				$reason = 'character-style fact signal';
 			} else {
-				$confidence = 58;
+				$confidence = 62;
 				$reason = 'weak character signal';
 			}
 		} elseif (!$has_existing_entity_context && $section === 'Organizations') {
 			$score = $this->organization_signal_score($entry);
-			$confidence = 48 + ($score * 14);
+			$confidence = $this->preview_section_band_confidence('Organizations', $score);
 			$reason = 'organization keyword signals';
 		} elseif (!$has_existing_entity_context && $section === 'Locations') {
 			$score = $this->location_signal_score($entry);
-			$confidence = 48 + ($score * 14);
+			$confidence = $this->preview_section_band_confidence('Locations', $score);
 			$reason = 'location keyword signals';
 		} elseif (!$has_existing_entity_context && $section === 'Technology / Systems') {
 			$score = $this->technology_signal_score($entry);
-			$confidence = 48 + ($score * 14);
+			$confidence = $this->preview_section_band_confidence('Technology / Systems', $score);
 			$reason = 'technology keyword signals';
 		} elseif (!$has_existing_entity_context && $section === 'Vehicles / Transportation') {
 			$score = $this->vehicle_signal_score($entry);
-			$confidence = 48 + ($score * 14);
+			$confidence = $this->preview_section_band_confidence('Vehicles / Transportation', $score);
 			$reason = 'vehicle keyword signals';
 		} elseif (!$has_existing_entity_context && $section === 'World Building') {
 			$score = $this->world_building_signal_score($entry);
-			$confidence = 50 + ($score * 13);
+			$confidence = $this->preview_section_band_confidence('World Building', $score);
 			$reason = 'world-building context signal';
 		} elseif (!$has_existing_entity_context && $section === 'Notes') {
 			$confidence = 40;
@@ -1895,6 +2028,23 @@ class PMM_Parser {
 			'confidence' => $confidence,
 			'reason' => $reason,
 		];
+	}
+
+	private function preview_section_band_confidence($section, $score) {
+		$score = max(0, min(3, (int) $score));
+		$bands = [
+			'Organizations' => [0 => 54, 1 => 64, 2 => 68, 3 => 72],
+			'Locations' => [0 => 52, 1 => 61, 2 => 65, 3 => 69],
+			'Technology / Systems' => [0 => 50, 1 => 58, 2 => 62, 3 => 66],
+			'Vehicles / Transportation' => [0 => 48, 1 => 55, 2 => 59, 3 => 63],
+			'World Building' => [0 => 46, 1 => 54, 2 => 57, 3 => 60],
+		];
+
+		if (!isset($bands[$section])) {
+			return 40;
+		}
+
+		return isset($bands[$section][$score]) ? (int) $bands[$section][$score] : (int) end($bands[$section]);
 	}
 
 	private function entry_has_additional_nonleading_exact_entity_match($data, $entry, $matched_section, $matched_entity) {
@@ -2076,18 +2226,30 @@ class PMM_Parser {
 		}
 
 		foreach ($stored as $source => $canonical) {
-			$canonical = trim((string) $canonical);
-			$source = trim((string) $source);
+			$canonical = $this->normalize_alias_rule_token($canonical);
+			$source = $this->normalize_alias_rule_token($source);
 
 			if ($source === '' || $canonical === '') {
 				continue;
 			}
 
+			$base_map[$source] = $canonical;
 			$base_map[mb_strtolower($source)] = $canonical;
 			$base_map[PMM_Utils::name_fingerprint($source)] = $canonical;
 		}
 
 		return $base_map;
+	}
+
+	private function normalize_alias_rule_token($value) {
+		$value = trim((string) $value);
+		$value = preg_replace('/^[\-*•]\s+/u', '', (string) $value);
+
+		if (preg_match('/^(["\'])(.*)\1$/u', $value, $m) === 1) {
+			$value = trim((string) $m[2]);
+		}
+
+		return $value;
 	}
 
 	private function get_confirmed_entities_registry_option() {
