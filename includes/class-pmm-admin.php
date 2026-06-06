@@ -114,6 +114,14 @@ class PMM_Admin {
 		$prune_unref = isset($_GET['pmm_prune_unref']) ? (int) $_GET['pmm_prune_unref'] : 0;
 		$prune_critical = isset($_GET['pmm_prune_critical']) ? (int) $_GET['pmm_prune_critical'] : 0;
 		$prune_trimmed = isset($_GET['pmm_prune_trimmed']) ? (int) $_GET['pmm_prune_trimmed'] : 0;
+		$prune_reviewed = isset($_GET['pmm_prune_reviewed']) ? (int) $_GET['pmm_prune_reviewed'] : -1;
+		$prune_removed = isset($_GET['pmm_prune_removed']) ? (int) $_GET['pmm_prune_removed'] : 0;
+		$prune_updated = isset($_GET['pmm_prune_updated']) ? (int) $_GET['pmm_prune_updated'] : 0;
+		$prune_marked_critical = isset($_GET['pmm_prune_marked_critical']) ? (int) $_GET['pmm_prune_marked_critical'] : 0;
+		$prune_nonprefix_reviewed = isset($_GET['pmm_prune_nonprefix_reviewed']) ? (int) $_GET['pmm_prune_nonprefix_reviewed'] : -1;
+		$prune_nonprefix_removed = isset($_GET['pmm_prune_nonprefix_removed']) ? (int) $_GET['pmm_prune_nonprefix_removed'] : 0;
+		$prune_nonprefix_updated = isset($_GET['pmm_prune_nonprefix_updated']) ? (int) $_GET['pmm_prune_nonprefix_updated'] : 0;
+		$prune_nonprefix_critical = isset($_GET['pmm_prune_nonprefix_critical']) ? (int) $_GET['pmm_prune_nonprefix_critical'] : 0;
 		$prune_preview_data = get_transient('pmm_prune_preview_' . get_current_user_id());
 		if (!is_array($prune_preview_data)) {
 			$prune_preview_data = [];
@@ -746,6 +754,14 @@ class PMM_Admin {
 
 			<?php if ($prune_preview && !empty($prune_preview_data['stats']) && is_array($prune_preview_data['stats'])) : ?>
 				<div class="notice notice-info"><p><?php esc_html_e('Prune preview generated. No output changes were saved yet.', 'perchance-memory-manager'); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ($prune_reviewed >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Prune candidate review applied: %1$d reviewed, %2$d removed, %3$d updated, %4$d marked critical.', 'perchance-memory-manager'), max(0, $prune_reviewed), max(0, $prune_removed), max(0, $prune_updated), max(0, $prune_marked_critical))); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ($prune_nonprefix_reviewed >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Non-prefix entry review applied: %1$d reviewed, %2$d removed, %3$d updated, %4$d marked critical.', 'perchance-memory-manager'), max(0, $prune_nonprefix_reviewed), max(0, $prune_nonprefix_removed), max(0, $prune_nonprefix_updated), max(0, $prune_nonprefix_critical))); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($rules_dirty) : ?>
@@ -1610,7 +1626,7 @@ class PMM_Admin {
 							</label>
 						</p>
 						<p class="description" style="margin-bottom:6px;"><?php esc_html_e('Save Entity Update writes directly to the latest output/version. Reprocess is not required unless output-affecting rules or staged raw rows changed.', 'perchance-memory-manager'); ?></p>
-						<p class="description" style="margin-bottom:6px;"><?php esc_html_e('Enter one kept entry per line without bullets. The saved file adds "- " automatically.', 'perchance-memory-manager'); ?></p>
+						<p class="description" style="margin-bottom:6px;"><?php esc_html_e('Paste one entry per line. Leading bullets like "-", "*", or "•" are stripped automatically, and Replace Entries will overwrite the current bucket with exactly what you paste here.', 'perchance-memory-manager'); ?></p>
 						<textarea name="pmm_edit_entries" rows="12" class="large-text code"><?php echo esc_textarea($edit_entries_text); ?></textarea>
 						<details style="margin-top:10px;">
 							<summary><strong><?php esc_html_e('Rendered Output Preview', 'perchance-memory-manager'); ?></strong></summary>
@@ -1662,6 +1678,9 @@ class PMM_Admin {
 								</label>
 							</p>
 							<p>
+								<label><input type="checkbox" name="pmm_prune_collect_nonprefix_review" value="1"> <?php esc_html_e('Collect entries that do not start with the selected entity name for review/edit/remove', 'perchance-memory-manager'); ?></label>
+							</p>
+							<p>
 								<label><input type="checkbox" name="pmm_prune_preview_only" value="1"> <?php esc_html_e('Preview prune report only (no changes saved)', 'perchance-memory-manager'); ?></label>
 							</p>
 							<?php submit_button(__('Run Intelligent Prune', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
@@ -1711,6 +1730,187 @@ class PMM_Admin {
 										</ul>
 									</details>
 								<?php endforeach; ?>
+
+								<?php
+								$review_candidates = isset($preview_report['review_candidates']) && is_array($preview_report['review_candidates']) ? array_values($preview_report['review_candidates']) : [];
+								if (!empty($review_candidates)) :
+								?>
+									<details style="margin-top:8px;" open>
+										<summary><strong><?php esc_html_e('Review All Prune Candidates Before Applying', 'perchance-memory-manager'); ?></strong> (<?php echo esc_html((string) count($review_candidates)); ?>)</summary>
+										<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="pmm-prune-preview-review-form" style="margin-top:8px;">
+											<?php wp_nonce_field('pmm_apply_prune_preview_review'); ?>
+											<input type="hidden" name="action" value="pmm_apply_prune_preview_review">
+											<input type="hidden" name="pmm_prune_section" value="<?php echo esc_attr($preview_section); ?>">
+											<input type="hidden" name="pmm_prune_entity" value="<?php echo esc_attr($preview_entity); ?>">
+											<input type="hidden" name="pmm_prune_review_rows" id="pmm_prune_review_rows" value="[]">
+											<table class="widefat striped" style="table-layout:fixed;width:100%;margin-top:6px;">
+												<thead>
+													<tr>
+														<th style="width:14%;"><?php esc_html_e('Reason', 'perchance-memory-manager'); ?></th>
+														<th style="width:24%;"><?php esc_html_e('Original Entry', 'perchance-memory-manager'); ?></th>
+														<th style="width:46%;"><?php esc_html_e('Edited Entry', 'perchance-memory-manager'); ?></th>
+														<th style="width:10%;"><?php esc_html_e('Action', 'perchance-memory-manager'); ?></th>
+														<th style="width:6%;"><?php esc_html_e('Critical', 'perchance-memory-manager'); ?></th>
+													</tr>
+												</thead>
+												<tbody>
+													<?php foreach ($review_candidates as $row_index => $row) : ?>
+														<?php
+														$source_index = isset($row['source_index']) ? (int) $row['source_index'] : $row_index;
+														$source_entry = isset($row['source_entry']) ? (string) $row['source_entry'] : '';
+														$reason_label = isset($row['reason_label']) ? (string) $row['reason_label'] : __('Prune candidate', 'perchance-memory-manager');
+														if ($source_entry === '') {
+															continue;
+														}
+														?>
+														<tr class="pmm-prune-review-row" data-source-index="<?php echo esc_attr((string) $source_index); ?>" data-source-entry="<?php echo esc_attr($source_entry); ?>">
+															<td style="white-space:pre-wrap;"><?php echo esc_html($reason_label); ?></td>
+															<td style="white-space:pre-wrap;"><?php echo esc_html($source_entry); ?></td>
+															<td><textarea class="large-text code pmm-prune-review-entry" rows="2" style="width:100%;max-width:100%;"><?php echo esc_textarea($source_entry); ?></textarea></td>
+															<td>
+																<select class="pmm-prune-review-action" style="width:100%;">
+																	<option value="remove" selected><?php esc_html_e('Remove', 'perchance-memory-manager'); ?></option>
+																	<option value="keep"><?php esc_html_e('Keep', 'perchance-memory-manager'); ?></option>
+																	<option value="edit"><?php esc_html_e('Edit', 'perchance-memory-manager'); ?></option>
+																</select>
+															</td>
+															<td style="text-align:center;">
+																<label style="display:inline-flex;align-items:center;gap:4px;justify-content:center;">
+																	<input type="checkbox" class="pmm-prune-review-critical" value="1">
+																	<span class="screen-reader-text"><?php esc_html_e('Mark critical', 'perchance-memory-manager'); ?></span>
+																</label>
+															</td>
+														</tr>
+													<?php endforeach; ?>
+												</tbody>
+											</table>
+											<?php submit_button(__('Apply Prune Candidate Review', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-top:8px;']); ?>
+										</form>
+										<script>
+										(function () {
+											var form = document.getElementById('pmm-prune-preview-review-form');
+											if (!form) {
+												return;
+											}
+
+											form.addEventListener('submit', function () {
+												var rows = [];
+												form.querySelectorAll('tr.pmm-prune-review-row').forEach(function (row) {
+													var sourceEntry = row.getAttribute('data-source-entry') || '';
+													if (!sourceEntry) {
+														return;
+													}
+													var sourceIndex = row.getAttribute('data-source-index') || '';
+													var actionEl = row.querySelector('.pmm-prune-review-action');
+													var entryEl = row.querySelector('.pmm-prune-review-entry');
+													var criticalEl = row.querySelector('.pmm-prune-review-critical');
+													rows.push({
+														source_index: sourceIndex,
+														source_entry: sourceEntry,
+														entry: entryEl ? (entryEl.value || sourceEntry) : sourceEntry,
+														action: actionEl ? (actionEl.value || 'remove') : 'remove',
+														critical: criticalEl && criticalEl.checked ? '1' : '0'
+													});
+												});
+
+												var hidden = document.getElementById('pmm_prune_review_rows');
+												if (hidden) {
+													hidden.value = JSON.stringify(rows);
+												}
+											});
+										})();
+										</script>
+									</details>
+								<?php endif; ?>
+
+								<?php
+								$nonprefix_rows = isset($preview_report['nonprefix_review']) && is_array($preview_report['nonprefix_review']) ? array_values($preview_report['nonprefix_review']) : [];
+								if (!empty($nonprefix_rows)) :
+								?>
+									<details style="margin-top:8px;" open>
+										<summary><strong><?php esc_html_e('Review Entries Not Starting With Entity Name', 'perchance-memory-manager'); ?></strong> (<?php echo esc_html((string) count($nonprefix_rows)); ?>)</summary>
+										<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="pmm-prune-nonprefix-review-form" style="margin-top:8px;">
+											<?php wp_nonce_field('pmm_apply_prune_nonprefix_review'); ?>
+											<input type="hidden" name="action" value="pmm_apply_prune_nonprefix_review">
+											<input type="hidden" name="pmm_prune_section" value="<?php echo esc_attr($preview_section); ?>">
+											<input type="hidden" name="pmm_prune_entity" value="<?php echo esc_attr($preview_entity); ?>">
+											<input type="hidden" name="pmm_prune_nonprefix_rows" id="pmm_prune_nonprefix_rows" value="[]">
+											<table class="widefat striped" style="table-layout:fixed;width:100%;margin-top:6px;">
+												<thead>
+													<tr>
+														<th style="width:26%;"><?php esc_html_e('Original Entry', 'perchance-memory-manager'); ?></th>
+														<th style="width:52%;"><?php esc_html_e('Edited Entry', 'perchance-memory-manager'); ?></th>
+														<th style="width:14%;"><?php esc_html_e('Action', 'perchance-memory-manager'); ?></th>
+														<th style="width:8%;"><?php esc_html_e('Critical', 'perchance-memory-manager'); ?></th>
+													</tr>
+												</thead>
+												<tbody>
+													<?php foreach ($nonprefix_rows as $row_index => $row) : ?>
+														<?php
+														$source_index = isset($row['source_index']) ? (int) $row['source_index'] : $row_index;
+														$source_entry = isset($row['source_entry']) ? (string) $row['source_entry'] : '';
+														if ($source_entry === '') {
+															continue;
+														}
+														?>
+														<tr class="pmm-prune-nonprefix-row" data-source-index="<?php echo esc_attr((string) $source_index); ?>" data-source-entry="<?php echo esc_attr($source_entry); ?>">
+															<td style="white-space:pre-wrap;"><?php echo esc_html($source_entry); ?></td>
+															<td><textarea class="large-text code pmm-prune-nonprefix-entry" rows="2" style="width:100%;max-width:100%;"><?php echo esc_textarea($source_entry); ?></textarea></td>
+															<td>
+																<select class="pmm-prune-nonprefix-action" style="width:100%;">
+																	<option value="remove" selected><?php esc_html_e('Remove', 'perchance-memory-manager'); ?></option>
+																	<option value="keep"><?php esc_html_e('Keep', 'perchance-memory-manager'); ?></option>
+																	<option value="edit"><?php esc_html_e('Edit', 'perchance-memory-manager'); ?></option>
+																</select>
+															</td>
+															<td style="text-align:center;">
+																<label style="display:inline-flex;align-items:center;gap:4px;justify-content:center;">
+																	<input type="checkbox" class="pmm-prune-nonprefix-critical" value="1">
+																	<span class="screen-reader-text"><?php esc_html_e('Mark critical', 'perchance-memory-manager'); ?></span>
+																</label>
+															</td>
+														</tr>
+													<?php endforeach; ?>
+												</tbody>
+											</table>
+											<?php submit_button(__('Apply Non-Prefix Review Changes', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin-top:8px;']); ?>
+										</form>
+										<script>
+										(function () {
+											var form = document.getElementById('pmm-prune-nonprefix-review-form');
+											if (!form) {
+												return;
+											}
+
+											form.addEventListener('submit', function () {
+												var rows = [];
+												form.querySelectorAll('tr.pmm-prune-nonprefix-row').forEach(function (row) {
+													var sourceEntry = row.getAttribute('data-source-entry') || '';
+													if (!sourceEntry) {
+														return;
+													}
+													var sourceIndex = row.getAttribute('data-source-index') || '';
+													var actionEl = row.querySelector('.pmm-prune-nonprefix-action');
+													var entryEl = row.querySelector('.pmm-prune-nonprefix-entry');
+																var criticalEl = row.querySelector('.pmm-prune-nonprefix-critical');
+													rows.push({
+														source_index: sourceIndex,
+														source_entry: sourceEntry,
+														entry: entryEl ? (entryEl.value || sourceEntry) : sourceEntry,
+																	action: actionEl ? (actionEl.value || 'remove') : 'remove',
+																	critical: criticalEl && criticalEl.checked ? '1' : '0'
+													});
+												});
+
+												var hidden = document.getElementById('pmm_prune_nonprefix_rows');
+												if (hidden) {
+													hidden.value = JSON.stringify(rows);
+												}
+											});
+										})();
+										</script>
+									</details>
+								<?php endif; ?>
 							</details>
 						<?php endif; ?>
 						<script>

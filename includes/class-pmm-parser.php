@@ -273,6 +273,9 @@ class PMM_Parser {
 
 				// Keep preview matching anchored to pre-existing entities only.
 				$suggestion = $this->suggest_new_entry_target($known_only, $normalized_entry);
+				if ($this->preview_should_suppress_new_entity_name($known_only, $suggestion)) {
+					$suggestion['entity'] = '';
+				}
 				$meta = $this->preview_row_confidence_meta($known_only, $normalized_entry, $suggestion);
 				$rows[] = [
 					'section' => $suggestion['section'],
@@ -288,6 +291,17 @@ class PMM_Parser {
 		}
 
 		return $rows;
+	}
+
+	private function preview_should_suppress_new_entity_name($data, $suggestion) {
+		$section = isset($suggestion['section']) ? trim((string) $suggestion['section']) : 'Notes';
+		$entity = isset($suggestion['entity']) ? trim((string) $suggestion['entity']) : '';
+
+		if ($entity === '' || in_array($section, $this->section_level_sections(), true)) {
+			return false;
+		}
+
+		return !(isset($data[$section]) && is_array($data[$section]) && isset($data[$section][$entity]));
 	}
 
 	private function preprocess($text) {
@@ -691,33 +705,13 @@ class PMM_Parser {
 
 	private function strip_entity_prefix($entry, $entity) {
 		$entry = trim((string) $entry);
-		$entity = trim((string) $entity);
-
 		if ($entry === '') {
 			return '';
 		}
 
-		if ($entity === '') {
-			return PMM_Utils::normalize_bullet($entry);
-		}
-
-		$pattern = '/^' . preg_quote($entity, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]])(?:\s*[:;,.!?\-]\s*|\s+)/iu';
-		$stripped = preg_replace($pattern, '', $entry, 1);
-		if (!is_string($stripped) || $stripped === '') {
-			$stripped = $entry;
-		}
-
-		$entity_parts = preg_split('/\s+/u', $entity);
-		$last_entity_part = is_array($entity_parts) ? trim((string) end($entity_parts)) : '';
-		if ($last_entity_part !== '') {
-			$repeat_pattern = '/^' . preg_quote($last_entity_part, '/') . '(?=$|\s|[:;,.!?\-\)\]\}])/iu';
-			$deduped = preg_replace($repeat_pattern, '', ltrim($stripped), 1);
-			if (is_string($deduped) && $deduped !== '') {
-				$stripped = ltrim($deduped);
-			}
-		}
-
-		return PMM_Utils::normalize_bullet($stripped);
+		// Perchance consumption expects each line to be self-contained.
+		// Keep entity names in the bullet text instead of stripping prefixes.
+		return PMM_Utils::normalize_bullet($entry);
 	}
 
 	private function flush_pending_raw_entry(&$data, &$pending_raw_entry) {
@@ -2090,6 +2084,11 @@ class PMM_Parser {
 		} elseif (!$has_existing_entity_context && $section === 'Notes') {
 			$confidence = 40;
 			$reason = 'general note fallback';
+		}
+
+		if (!$has_existing_entity_context && $section !== 'Notes' && $section !== 'Relationships') {
+			$confidence = 65;
+			$reason = 'section guess without known entity match';
 		}
 
 		if ($entity !== '') {
