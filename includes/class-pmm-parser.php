@@ -1775,19 +1775,19 @@ class PMM_Parser {
 	}
 
 	private function entry_starts_with_entity_phrase($entry, $entity_phrase) {
-		$entry = trim((string) $entry);
-		$entity_phrase = trim((string) $entity_phrase);
+		$entry = $this->normalize_entity_match_text($entry);
+		$entity_phrase = $this->normalize_entity_match_text($entity_phrase);
 		if ($entry === '' || $entity_phrase === '') {
 			return false;
 		}
 
-		$pattern = '/^' . preg_quote($entity_phrase, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]])/iu';
+		$pattern = '/^' . preg_quote($entity_phrase, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]\'\x{2019}])/iu';
 		return preg_match($pattern, $entry) === 1;
 	}
 
 	private function entry_contains_entity_phrase($entry, $entity_phrase) {
-		$entry = trim((string) $entry);
-		$entity_phrase = trim((string) $entity_phrase);
+		$entry = $this->normalize_entity_match_text($entry);
+		$entity_phrase = $this->normalize_entity_match_text($entity_phrase);
 		if ($entry === '' || $entity_phrase === '') {
 			return false;
 		}
@@ -1797,8 +1797,8 @@ class PMM_Parser {
 	}
 
 	private function entry_mentions_entity_name($entry, $entity) {
-		$entry = trim((string) $entry);
-		$entity = trim((string) $entity);
+		$entry = $this->normalize_entity_match_text($entry);
+		$entity = $this->normalize_entity_match_text($entity);
 		if ($entry === '' || $entity === '') {
 			return false;
 		}
@@ -1826,6 +1826,17 @@ class PMM_Parser {
 		$pattern = '/\b' . implode('\s+', $escaped) . '\b/ui';
 
 		return preg_match($pattern, $entry) === 1;
+	}
+
+	private function normalize_entity_match_text($text) {
+		$text = trim((string) $text);
+		if ($text === '') {
+			return '';
+		}
+
+		// Ignore markdown-style emphasis markers during matching.
+		$text = str_replace('*', '', $text);
+		return trim((string) $text);
 	}
 
 	private function entry_has_multiple_named_subjects($entry) {

@@ -112,6 +112,7 @@ class PMM_Admin {
 		$prune_near = isset($_GET['pmm_prune_near']) ? (int) $_GET['pmm_prune_near'] : 0;
 		$prune_stale = isset($_GET['pmm_prune_stale']) ? (int) $_GET['pmm_prune_stale'] : 0;
 		$prune_unref = isset($_GET['pmm_prune_unref']) ? (int) $_GET['pmm_prune_unref'] : 0;
+		$prune_entity_mismatch = isset($_GET['pmm_prune_entity_mismatch']) ? (int) $_GET['pmm_prune_entity_mismatch'] : 0;
 		$prune_critical = isset($_GET['pmm_prune_critical']) ? (int) $_GET['pmm_prune_critical'] : 0;
 		$prune_trimmed = isset($_GET['pmm_prune_trimmed']) ? (int) $_GET['pmm_prune_trimmed'] : 0;
 		$prune_reviewed = isset($_GET['pmm_prune_reviewed']) ? (int) $_GET['pmm_prune_reviewed'] : -1;
@@ -749,7 +750,7 @@ class PMM_Admin {
 			<?php endif; ?>
 
 			<?php if ($entity_pruned) : ?>
-				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entity prune completed: %1$d -> %2$d entries (exact duplicates removed: %3$d, near duplicates removed: %4$d, stale removed: %5$d, unreferenced removed: %6$d, critical entries preserved: %7$d, trimmed to cap: %8$d).', 'perchance-memory-manager'), max(0, $prune_before), max(0, $prune_after), max(0, $prune_exact), max(0, $prune_near), max(0, $prune_stale), max(0, $prune_unref), max(0, $prune_critical), max(0, $prune_trimmed))); ?></p></div>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entity prune completed: %1$d -> %2$d entries (exact duplicates removed: %3$d, near duplicates removed: %4$d, stale removed: %5$d, unreferenced removed: %6$d, missing selected entity name removed: %7$d, critical entries preserved: %8$d, trimmed to cap: %9$d).', 'perchance-memory-manager'), max(0, $prune_before), max(0, $prune_after), max(0, $prune_exact), max(0, $prune_near), max(0, $prune_stale), max(0, $prune_unref), max(0, $prune_entity_mismatch), max(0, $prune_critical), max(0, $prune_trimmed))); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($prune_preview && !empty($prune_preview_data['stats']) && is_array($prune_preview_data['stats'])) : ?>
@@ -1662,7 +1663,7 @@ class PMM_Admin {
 							</p>
 							<p>
 								<label><?php esc_html_e('Max entries to keep', 'perchance-memory-manager'); ?>
-									<input type="number" name="pmm_prune_max_keep" min="50" max="5000" step="1" value="1500" style="width:110px;">
+									<input type="number" name="pmm_prune_max_keep" min="50" max="300" step="1" value="300" style="width:110px;">
 								</label>
 								<label style="margin-left:8px;"><?php esc_html_e('Near-duplicate threshold', 'perchance-memory-manager'); ?>
 									<input type="number" name="pmm_prune_similarity_threshold" min="0.75" max="0.98" step="0.01" value="0.90" style="width:100px;">
@@ -1676,6 +1677,9 @@ class PMM_Admin {
 								<label style="margin-left:8px;"><?php esc_html_e('Reference threshold', 'perchance-memory-manager'); ?>
 									<input type="number" name="pmm_prune_unreferenced_threshold" min="0.40" max="0.95" step="0.01" value="0.60" style="width:100px;">
 								</label>
+							</p>
+							<p>
+								<label><input type="checkbox" name="pmm_prune_require_entity_name_match" value="1"> <?php esc_html_e('Global entity-name check: remove entries that do not mention the selected entity name (reviewable in preview)', 'perchance-memory-manager'); ?></label>
 							</p>
 							<p>
 								<label><input type="checkbox" name="pmm_prune_collect_nonprefix_review" value="1"> <?php esc_html_e('Collect entries that do not start with the selected entity name for review/edit/remove', 'perchance-memory-manager'); ?></label>
@@ -1698,11 +1702,12 @@ class PMM_Admin {
 								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Target: %1$s / %2$s. This is a preview only; run prune again without preview mode to apply changes.', 'perchance-memory-manager'), $preview_section, $preview_target)); ?></p>
 								<ul class="pmm-stats">
 									<li><strong><?php esc_html_e('Before:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['original'] ?? 0))); ?></li>
-									<li><strong><?php esc_html_e('After (estimated):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) (((int) ($preview_stats['original'] ?? 0)) - ((int) ($preview_stats['exact_duplicates'] ?? 0)) - ((int) ($preview_stats['near_duplicates'] ?? 0)) - ((int) ($preview_stats['stale_removed'] ?? 0)) - ((int) ($preview_stats['unreferenced_removed'] ?? 0)) - ((int) ($preview_stats['trimmed'] ?? 0)))); ?></li>
+									<li><strong><?php esc_html_e('After (estimated):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) (((int) ($preview_stats['original'] ?? 0)) - ((int) ($preview_stats['exact_duplicates'] ?? 0)) - ((int) ($preview_stats['near_duplicates'] ?? 0)) - ((int) ($preview_stats['stale_removed'] ?? 0)) - ((int) ($preview_stats['unreferenced_removed'] ?? 0)) - ((int) ($preview_stats['entity_name_mismatch_removed'] ?? 0)) - ((int) ($preview_stats['trimmed'] ?? 0)))); ?></li>
 									<li><strong><?php esc_html_e('Exact duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['exact_duplicates'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Near duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['near_duplicates'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Stale candidates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['stale_removed'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Unreferenced candidates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['unreferenced_removed'] ?? 0))); ?></li>
+									<li><strong><?php esc_html_e('Missing selected entity name:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['entity_name_mismatch_removed'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Critical entries preserved:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['critical_preserved'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Trimmed to cap:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['trimmed'] ?? 0))); ?></li>
 								</ul>
@@ -1713,6 +1718,7 @@ class PMM_Admin {
 									'near_duplicates' => __('Sample near duplicates to remove', 'perchance-memory-manager'),
 									'stale_removed' => __('Sample stale candidates to remove', 'perchance-memory-manager'),
 									'unreferenced_removed' => __('Sample unreferenced candidates to remove', 'perchance-memory-manager'),
+									'entity_name_mismatch_removed' => __('Sample entries missing selected entity name', 'perchance-memory-manager'),
 									'trimmed' => __('Sample entries trimmed by cap', 'perchance-memory-manager'),
 								];
 								foreach ($preview_groups as $group_key => $group_label) :

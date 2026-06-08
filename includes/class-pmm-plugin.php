@@ -1950,9 +1950,10 @@ class PMM_Plugin {
 
 		$section = isset($_POST['pmm_prune_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_section'])) : 'Characters';
 		$entity = isset($_POST['pmm_prune_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_entity'])) : '';
-		$max_keep = isset($_POST['pmm_prune_max_keep']) ? max(50, min(5000, (int) $_POST['pmm_prune_max_keep'])) : 1500;
+		$max_keep = isset($_POST['pmm_prune_max_keep']) ? max(50, min(300, (int) $_POST['pmm_prune_max_keep'])) : 300;
 		$remove_stale = !empty($_POST['pmm_prune_remove_stale']);
 		$remove_unreferenced = !empty($_POST['pmm_prune_remove_unreferenced']);
+		$require_entity_name_match = !empty($_POST['pmm_prune_require_entity_name_match']);
 		$collect_nonprefix_review = !empty($_POST['pmm_prune_collect_nonprefix_review']);
 		$preview_only = !empty($_POST['pmm_prune_preview_only']);
 		$similarity_threshold = isset($_POST['pmm_prune_similarity_threshold']) ? (float) wp_unslash((string) $_POST['pmm_prune_similarity_threshold']) : 0.90;
@@ -1980,6 +1981,7 @@ class PMM_Plugin {
 			'near_duplicates' => 0,
 			'stale_removed' => 0,
 			'unreferenced_removed' => 0,
+			'entity_name_mismatch_removed' => 0,
 			'critical_preserved' => 0,
 			'trimmed' => 0,
 		];
@@ -1988,6 +1990,7 @@ class PMM_Plugin {
 			'near_duplicates' => [],
 			'stale_removed' => [],
 			'unreferenced_removed' => [],
+			'entity_name_mismatch_removed' => [],
 			'trimmed' => [],
 		];
 
@@ -2006,7 +2009,8 @@ class PMM_Plugin {
 			$unreferenced_threshold,
 			$critical_rules,
 			$section,
-			$entity
+			$entity,
+			$require_entity_name_match
 		);
 
 		$nonprefix_review_rows = [];
@@ -2024,6 +2028,7 @@ class PMM_Plugin {
 				'similarity_threshold' => $similarity_threshold,
 				'remove_stale' => $remove_stale ? 1 : 0,
 				'remove_unreferenced' => $remove_unreferenced ? 1 : 0,
+				'require_entity_name_match' => $require_entity_name_match ? 1 : 0,
 				'collect_nonprefix_review' => $collect_nonprefix_review ? 1 : 0,
 				'unreferenced_threshold' => $unreferenced_threshold,
 				'stats' => $stats,
@@ -2032,6 +2037,7 @@ class PMM_Plugin {
 					'near_duplicates' => array_slice((array) $report['near_duplicates'], 0, 200),
 					'stale_removed' => array_slice((array) $report['stale_removed'], 0, 200),
 					'unreferenced_removed' => array_slice((array) $report['unreferenced_removed'], 0, 200),
+					'entity_name_mismatch_removed' => array_slice((array) $report['entity_name_mismatch_removed'], 0, 200),
 					'trimmed' => array_slice((array) $report['trimmed'], 0, 300),
 					'review_candidates' => array_values((array) $review_candidates),
 					'nonprefix_review' => array_slice((array) $nonprefix_review_rows, 0, 2000),
@@ -2085,6 +2091,7 @@ class PMM_Plugin {
 			'pmm_prune_near' => (string) $stats['near_duplicates'],
 			'pmm_prune_stale' => (string) $stats['stale_removed'],
 			'pmm_prune_unref' => (string) $stats['unreferenced_removed'],
+			'pmm_prune_entity_mismatch' => (string) $stats['entity_name_mismatch_removed'],
 			'pmm_prune_critical' => (string) $stats['critical_preserved'],
 			'pmm_prune_trimmed' => (string) $stats['trimmed'],
 		], admin_url('admin.php')));
@@ -5715,7 +5722,7 @@ class PMM_Plugin {
 		return true;
 	}
 
-	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null, $remove_unreferenced = false, $known_entities = [], $unreferenced_threshold = 0.60, $critical_rules = [], $section = '', $entity = '') {
+	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null, $remove_unreferenced = false, $known_entities = [], $unreferenced_threshold = 0.60, $critical_rules = [], $section = '', $entity = '', $require_entity_name_match = false) {
 		$items = array_values(array_filter(array_map(static function($item) {
 			return (string) $item;
 		}, (array) $items), static function($item) {
@@ -5809,6 +5816,21 @@ class PMM_Plugin {
 			$deduped = $referenced;
 		}
 
+		if ($require_entity_name_match && trim((string) $entity) !== '' && !in_array((string) $section, $this->section_level_sections(), true)) {
+			$matched = [];
+			foreach ($deduped as $entry) {
+				if ($this->entry_references_target_entity($entry, $entity)) {
+					$matched[] = $entry;
+					continue;
+				}
+				++$stats['entity_name_mismatch_removed'];
+				if (is_array($report)) {
+					$report['entity_name_mismatch_removed'][] = $entry;
+				}
+			}
+			$deduped = $matched;
+		}
+
 		$remaining_keep = max(0, (int) $max_keep - count($critical_items));
 		if (count($deduped) > $remaining_keep) {
 			$stats['trimmed'] = count($deduped) - $remaining_keep;
@@ -5828,6 +5850,7 @@ class PMM_Plugin {
 			'near_duplicates' => __('Near duplicate', 'perchance-memory-manager'),
 			'stale_removed' => __('Stale candidate', 'perchance-memory-manager'),
 			'unreferenced_removed' => __('Unreferenced candidate', 'perchance-memory-manager'),
+			'entity_name_mismatch_removed' => __('Missing selected entity name', 'perchance-memory-manager'),
 			'trimmed' => __('Trimmed by cap', 'perchance-memory-manager'),
 		];
 
@@ -5899,13 +5922,13 @@ class PMM_Plugin {
 	}
 
 	private function entry_starts_with_entity_name($entry, $entity) {
-		$entry = trim((string) $entry);
-		$entity = trim((string) $entity);
+		$entry = trim(str_replace('*', '', (string) $entry));
+		$entity = trim(str_replace('*', '', (string) $entity));
 		if ($entry === '' || $entity === '') {
 			return false;
 		}
 
-		$pattern = '/^' . preg_quote($entity, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]])/iu';
+		$pattern = '/^' . preg_quote($entity, '/') . '(?=$|\s|[:;,.!?\-\(\)\[\]\'\x{2019}])/iu';
 		return preg_match($pattern, $entry) === 1;
 	}
 
@@ -5958,6 +5981,25 @@ class PMM_Plugin {
 		return false;
 	}
 
+	private function entry_references_target_entity($entry, $entity) {
+		$entry = trim(str_replace('*', '', (string) $entry));
+		$entity = trim(str_replace('*', '', (string) $entity));
+		if ($entry === '' || $entity === '') {
+			return false;
+		}
+
+		if ($this->entry_starts_with_entity_name($entry, $entity)) {
+			return true;
+		}
+
+		$pattern = '/(?<![\w\-])' . preg_quote($entity, '/') . '(?![\w\-])/iu';
+		if (preg_match($pattern, $entry) === 1) {
+			return true;
+		}
+
+		return PMM_Utils::contains_name_score($entry, $entity) >= 0.70;
+	}
+
 	private function entries_are_similar($a, $b, $threshold) {
 		$fpA = PMM_Utils::fingerprint((string) $a);
 		$fpB = PMM_Utils::fingerprint((string) $b);
@@ -5984,9 +6026,139 @@ class PMM_Plugin {
 			return true;
 		}
 
+		if ($this->entries_repeat_fact_theme((string) $a, (string) $b, $fpA, $fpB)) {
+			return true;
+		}
+
 		$distance = levenshtein($fpA, $fpB);
 		$ratio = max(0.0, 1.0 - ($distance / $maxLen));
 		return $ratio >= ((float) $threshold + 0.02);
+	}
+
+	private function entries_repeat_fact_theme($a, $b, $fpA, $fpB) {
+		$tokensA = $this->thematic_token_set($fpA);
+		$tokensB = $this->thematic_token_set($fpB);
+		if (count($tokensA) < 3 || count($tokensB) < 3) {
+			return false;
+		}
+
+		$overlap = array_intersect_key($tokensA, $tokensB);
+		$overlap_count = count($overlap);
+		if ($overlap_count < 3) {
+			return false;
+		}
+
+		$short_coverage = $overlap_count / max(1, min(count($tokensA), count($tokensB)));
+		$long_coverage = $overlap_count / max(1, max(count($tokensA), count($tokensB)));
+		if ($short_coverage >= 0.86) {
+			return true;
+		}
+
+		$bigramsA = $this->token_bigram_set(array_keys($tokensA));
+		$bigramsB = $this->token_bigram_set(array_keys($tokensB));
+		$bigram_overlap = count(array_intersect_key($bigramsA, $bigramsB));
+		$fact_signal = $this->entry_has_fact_or_location_signal($a) && $this->entry_has_fact_or_location_signal($b);
+
+		return $fact_signal && $short_coverage >= 0.72 && $long_coverage >= 0.50 && $bigram_overlap >= 1;
+	}
+
+	private function thematic_token_set($fp_text) {
+		$parts = array_values(array_filter(preg_split('/\s+/u', (string) $fp_text), static function($token) {
+			return is_string($token) && $token !== '';
+		}));
+
+		$stop = [
+			'the' => true,
+			'a' => true,
+			'an' => true,
+			'and' => true,
+			'or' => true,
+			'but' => true,
+			'for' => true,
+			'with' => true,
+			'from' => true,
+			'this' => true,
+			'that' => true,
+			'these' => true,
+			'those' => true,
+			'into' => true,
+			'onto' => true,
+			'about' => true,
+			'just' => true,
+			'very' => true,
+			'also' => true,
+			'been' => true,
+			'being' => true,
+			'were' => true,
+			'was' => true,
+			'is' => true,
+			'are' => true,
+			'to' => true,
+			'of' => true,
+			'in' => true,
+			'on' => true,
+			'at' => true,
+			'by' => true,
+			'as' => true,
+			'it' => true,
+			'its' => true,
+			'their' => true,
+			'they' => true,
+			'them' => true,
+			'he' => true,
+			'she' => true,
+			'his' => true,
+			'her' => true,
+		];
+
+		$set = [];
+		foreach ($parts as $token) {
+			if (strlen($token) < 3) {
+				continue;
+			}
+			if (isset($stop[$token])) {
+				continue;
+			}
+			$set[$token] = true;
+		}
+
+		return $set;
+	}
+
+	private function token_bigram_set($tokens) {
+		$tokens = array_values((array) $tokens);
+		$set = [];
+		for ($i = 0; $i < count($tokens) - 1; $i++) {
+			$left = trim((string) $tokens[$i]);
+			$right = trim((string) $tokens[$i + 1]);
+			if ($left === '' || $right === '') {
+				continue;
+			}
+			$set[$left . ' ' . $right] = true;
+		}
+
+		return $set;
+	}
+
+	private function entry_has_fact_or_location_signal($entry) {
+		$entry = trim((string) $entry);
+		if ($entry === '') {
+			return false;
+		}
+
+		if (preg_match('/\b(located|based|resides|lives|headquartered|stationed|born|raised|from|near|inside|outside|across|north|south|east|west)\b/iu', $entry) === 1) {
+			return true;
+		}
+
+		if (preg_match('/\b(city|town|village|district|region|province|kingdom|country|island|bay|harbor|port|station|base|facility|building|temple|palace|forest|desert|mountain|river|valley|planet|moon|sector|zone)\b/iu', $entry) === 1) {
+			return true;
+		}
+
+		if (preg_match('/\b(works|serves|leads|controls|owns|operates|belongs|member|allied|enemy|family|objective|mission|status|condition)\b/iu', $entry) === 1) {
+			return true;
+		}
+
+		return preg_match('/\b\d{2,4}\b/u', $entry) === 1;
 	}
 
 	private function is_likely_stale_entry($entry) {
