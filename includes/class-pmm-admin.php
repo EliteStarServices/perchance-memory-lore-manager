@@ -104,15 +104,18 @@ class PMM_Admin {
 		$entry_convert_updated = isset($_GET['pmm_entry_convert_updated']) ? (int) $_GET['pmm_entry_convert_updated'] : 0;
 		$entity_pruned = isset($_GET['pmm_entity_pruned']) ? (int) $_GET['pmm_entity_pruned'] : 0;
 		$prune_preview = isset($_GET['pmm_prune_preview']) ? (int) $_GET['pmm_prune_preview'] : 0;
+		$prune_global_mode = isset($_GET['pmm_prune_global_mode']) ? (int) $_GET['pmm_prune_global_mode'] : 0;
 		$prune_section = isset($_GET['pmm_prune_section']) ? sanitize_text_field(wp_unslash($_GET['pmm_prune_section'])) : '';
 		$prune_entity = isset($_GET['pmm_prune_entity']) ? sanitize_text_field(wp_unslash($_GET['pmm_prune_entity'])) : '';
 		$prune_before = isset($_GET['pmm_prune_before']) ? (int) $_GET['pmm_prune_before'] : 0;
 		$prune_after = isset($_GET['pmm_prune_after']) ? (int) $_GET['pmm_prune_after'] : 0;
 		$prune_exact = isset($_GET['pmm_prune_exact']) ? (int) $_GET['pmm_prune_exact'] : 0;
 		$prune_near = isset($_GET['pmm_prune_near']) ? (int) $_GET['pmm_prune_near'] : 0;
+		$prune_global_dup = isset($_GET['pmm_prune_global_dup']) ? (int) $_GET['pmm_prune_global_dup'] : 0;
 		$prune_stale = isset($_GET['pmm_prune_stale']) ? (int) $_GET['pmm_prune_stale'] : 0;
 		$prune_unref = isset($_GET['pmm_prune_unref']) ? (int) $_GET['pmm_prune_unref'] : 0;
 		$prune_entity_mismatch = isset($_GET['pmm_prune_entity_mismatch']) ? (int) $_GET['pmm_prune_entity_mismatch'] : 0;
+		$prune_entity_cap_removed = isset($_GET['pmm_prune_entity_cap_removed']) ? (int) $_GET['pmm_prune_entity_cap_removed'] : 0;
 		$prune_critical = isset($_GET['pmm_prune_critical']) ? (int) $_GET['pmm_prune_critical'] : 0;
 		$prune_trimmed = isset($_GET['pmm_prune_trimmed']) ? (int) $_GET['pmm_prune_trimmed'] : 0;
 		$prune_reviewed = isset($_GET['pmm_prune_reviewed']) ? (int) $_GET['pmm_prune_reviewed'] : -1;
@@ -750,7 +753,7 @@ class PMM_Admin {
 			<?php endif; ?>
 
 			<?php if ($entity_pruned) : ?>
-				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entity prune completed: %1$d -> %2$d entries (exact duplicates removed: %3$d, near duplicates removed: %4$d, stale removed: %5$d, unreferenced removed: %6$d, missing selected entity name removed: %7$d, critical entries preserved: %8$d, trimmed to cap: %9$d).', 'perchance-memory-manager'), max(0, $prune_before), max(0, $prune_after), max(0, $prune_exact), max(0, $prune_near), max(0, $prune_stale), max(0, $prune_unref), max(0, $prune_entity_mismatch), max(0, $prune_critical), max(0, $prune_trimmed))); ?></p></div>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Entity prune completed: %1$d -> %2$d entries (exact duplicates removed: %3$d, near duplicates removed: %4$d, global duplicates removed: %5$d, stale removed: %6$d, unreferenced removed: %7$d, missing selected entity name removed: %8$d, global entity-name cap removed: %9$d, critical entries preserved: %10$d, trimmed to cap: %11$d).', 'perchance-memory-manager'), max(0, $prune_before), max(0, $prune_after), max(0, $prune_exact), max(0, $prune_near), max(0, $prune_global_dup), max(0, $prune_stale), max(0, $prune_unref), max(0, $prune_entity_mismatch), max(0, $prune_entity_cap_removed), max(0, $prune_critical), max(0, $prune_trimmed))); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($prune_preview && !empty($prune_preview_data['stats']) && is_array($prune_preview_data['stats'])) : ?>
@@ -1663,10 +1666,30 @@ class PMM_Admin {
 							</p>
 							<p>
 								<label><?php esc_html_e('Max entries to keep', 'perchance-memory-manager'); ?>
-									<input type="number" name="pmm_prune_max_keep" min="50" max="300" step="1" value="300" style="width:110px;">
+									<input type="number" name="pmm_prune_max_keep" min="50" max="500" step="1" value="350" style="width:110px;">
 								</label>
 								<label style="margin-left:8px;"><?php esc_html_e('Near-duplicate threshold', 'perchance-memory-manager'); ?>
 									<input type="number" name="pmm_prune_similarity_threshold" min="0.75" max="0.98" step="0.01" value="0.90" style="width:100px;">
+								</label>
+							</p>
+							<p>
+								<label><input type="checkbox" name="pmm_prune_global_mode" value="1" <?php checked($prune_global_mode, 1); ?>> <?php esc_html_e('Global mode: evaluate all sections/entities and collect one combined review queue before applying', 'perchance-memory-manager'); ?></label>
+								<span class="description" style="margin-left:6px;"><?php esc_html_e('World Building is excluded from global prune and is only pruned when selected directly.', 'perchance-memory-manager'); ?></span>
+							</p>
+							<p>
+								<label><input type="checkbox" name="pmm_prune_global_duplicate_detection" value="1"> <?php esc_html_e('Global duplicate detection: remove duplicates across all buckets during this run (opt-in; can be slow on large files)', 'perchance-memory-manager'); ?></label>
+							</p>
+							<p>
+								<label><input type="checkbox" name="pmm_prune_global_entity_name_cap_enabled" value="1" id="pmm_prune_global_entity_name_cap_enabled"> <?php esc_html_e('Global entity-name cap (opt-in)', 'perchance-memory-manager'); ?></label>
+								<label style="margin-left:8px;"><?php esc_html_e('Max counted entries', 'perchance-memory-manager'); ?>
+									<input type="number" name="pmm_prune_global_entity_name_cap" id="pmm_prune_global_entity_name_cap" min="1" max="4000" step="1" value="1350" style="width:110px;" disabled>
+								</label>
+								<span class="description" style="margin-left:6px;"><?php esc_html_e('When enabled, each entry counts at most once toward this cap in global mode.', 'perchance-memory-manager'); ?></span>
+							</p>
+							<p>
+									<label><input type="checkbox" name="pmm_prune_global_entity_name_cap_ignore_enabled" value="1" id="pmm_prune_global_entity_name_cap_ignore_enabled" checked> <?php esc_html_e('Ignore one entity during global prune (including global entity-name cap)', 'perchance-memory-manager'); ?></label>
+								<label style="margin-left:8px;"><?php esc_html_e('Ignored entity', 'perchance-memory-manager'); ?>
+									<input type="text" name="pmm_prune_global_entity_name_cap_ignore_entity" id="pmm_prune_global_entity_name_cap_ignore_entity" value="DJa" style="width:140px;" disabled>
 								</label>
 							</p>
 							<p>
@@ -1679,13 +1702,50 @@ class PMM_Admin {
 								</label>
 							</p>
 							<p>
-								<label><input type="checkbox" name="pmm_prune_require_entity_name_match" value="1"> <?php esc_html_e('Global entity-name check: remove entries that do not mention the selected entity name (reviewable in preview)', 'perchance-memory-manager'); ?></label>
+								<label><input type="checkbox" name="pmm_prune_require_entity_name_match" value="1" id="pmm_prune_require_entity_name_match"> <?php esc_html_e('Entity-name check: remove entries that do not mention the selected entity name (only in single-entity mode)', 'perchance-memory-manager'); ?></label>
 							</p>
+							<script>
+							(function () {
+								var globalModeCheckbox = document.querySelector('input[name="pmm_prune_global_mode"]');
+								var entityNameCheckbox = document.getElementById('pmm_prune_require_entity_name_match');
+								var globalEntityCapEnabled = document.getElementById('pmm_prune_global_entity_name_cap_enabled');
+								var globalEntityCapInput = document.getElementById('pmm_prune_global_entity_name_cap');
+								var globalEntityCapIgnoreEnabled = document.getElementById('pmm_prune_global_entity_name_cap_ignore_enabled');
+								var globalEntityCapIgnoreEntity = document.getElementById('pmm_prune_global_entity_name_cap_ignore_entity');
+								var updateEntityNameDisabled = function () {
+									if (globalModeCheckbox && entityNameCheckbox) {
+										entityNameCheckbox.disabled = globalModeCheckbox.checked;
+										if (globalModeCheckbox.checked) {
+											entityNameCheckbox.checked = false;
+										}
+									}
+									if (globalEntityCapEnabled && globalEntityCapInput) {
+										var capEnabled = globalModeCheckbox ? (globalModeCheckbox.checked && globalEntityCapEnabled.checked) : globalEntityCapEnabled.checked;
+										globalEntityCapInput.disabled = !capEnabled;
+										if (globalEntityCapIgnoreEnabled && globalEntityCapIgnoreEntity) {
+											globalEntityCapIgnoreEnabled.disabled = !capEnabled;
+											globalEntityCapIgnoreEntity.disabled = !capEnabled || !globalEntityCapIgnoreEnabled.checked;
+										}
+									}
+								};
+								if (globalModeCheckbox) {
+									globalModeCheckbox.addEventListener('change', updateEntityNameDisabled);
+								}
+								if (globalEntityCapEnabled) {
+									globalEntityCapEnabled.addEventListener('change', updateEntityNameDisabled);
+								}
+								if (globalEntityCapIgnoreEnabled) {
+									globalEntityCapIgnoreEnabled.addEventListener('change', updateEntityNameDisabled);
+								}
+								updateEntityNameDisabled();
+							})();
+							</script>
 							<p>
 								<label><input type="checkbox" name="pmm_prune_collect_nonprefix_review" value="1"> <?php esc_html_e('Collect entries that do not start with the selected entity name for review/edit/remove', 'perchance-memory-manager'); ?></label>
 							</p>
 							<p>
-								<label><input type="checkbox" name="pmm_prune_preview_only" value="1"> <?php esc_html_e('Preview prune report only (no changes saved)', 'perchance-memory-manager'); ?></label>
+								<label><input type="checkbox" name="pmm_prune_preview_only" value="1" checked> <?php esc_html_e('Preview prune report only (no changes saved)', 'perchance-memory-manager'); ?></label>
+								<span class="description" style="margin-left:6px;"><?php esc_html_e('Recommended: Always preview first to see what will be removed. Uncheck to apply changes.', 'perchance-memory-manager'); ?></span>
 							</p>
 							<?php submit_button(__('Run Intelligent Prune', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
 						</form>
@@ -1695,19 +1755,35 @@ class PMM_Admin {
 							$preview_report = isset($prune_preview_data['report']) && is_array($prune_preview_data['report']) ? $prune_preview_data['report'] : [];
 							$preview_section = isset($prune_preview_data['section']) ? (string) $prune_preview_data['section'] : $edit_section;
 							$preview_entity = isset($prune_preview_data['entity']) ? (string) $prune_preview_data['entity'] : $edit_entity;
-							$preview_target = $preview_entity !== '' ? $preview_entity : __('(section-level entries)', 'perchance-memory-manager');
+							$preview_global_mode = !empty($prune_preview_data['global_mode']);
+							$preview_target = $preview_global_mode
+								? __('(all sections and entity buckets)', 'perchance-memory-manager')
+								: ($preview_entity !== '' ? $preview_entity : __('(section-level entries)', 'perchance-memory-manager'));
+							$preview_time_budget_exceeded = !empty($prune_preview_data['time_budget_exceeded']);
 							?>
 							<details style="margin-top:12px;" open>
 								<summary><strong><?php esc_html_e('Prune Preview Report', 'perchance-memory-manager'); ?></strong></summary>
 								<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Target: %1$s / %2$s. This is a preview only; run prune again without preview mode to apply changes.', 'perchance-memory-manager'), $preview_section, $preview_target)); ?></p>
+								<?php if ($preview_time_budget_exceeded) : ?>
+									<div class="notice notice-warning" style="display:block; padding:12px; margin:8px 0; border-left:4px solid #ffb900;">
+										<p><strong><?php esc_html_e('Note:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('Analysis was incomplete due to processing time limit. Results below show partial analysis of your entries. To complete the analysis, consider:', 'perchance-memory-manager'); ?></p>
+										<ul style="margin:8px 0 0 20px;">
+											<li><?php esc_html_e('Running prune in smaller chunks (single entity at a time)', 'perchance-memory-manager'); ?></li>
+											<li><?php esc_html_e('Disabling global duplicate detection if enabled', 'perchance-memory-manager'); ?></li>
+											<li><?php esc_html_e('Reducing the maximum keep value', 'perchance-memory-manager'); ?></li>
+										</ul>
+									</div>
+								<?php endif; ?>
 								<ul class="pmm-stats">
 									<li><strong><?php esc_html_e('Before:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['original'] ?? 0))); ?></li>
-									<li><strong><?php esc_html_e('After (estimated):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) (((int) ($preview_stats['original'] ?? 0)) - ((int) ($preview_stats['exact_duplicates'] ?? 0)) - ((int) ($preview_stats['near_duplicates'] ?? 0)) - ((int) ($preview_stats['stale_removed'] ?? 0)) - ((int) ($preview_stats['unreferenced_removed'] ?? 0)) - ((int) ($preview_stats['entity_name_mismatch_removed'] ?? 0)) - ((int) ($preview_stats['trimmed'] ?? 0)))); ?></li>
+									<li><strong><?php esc_html_e('After (estimated):', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) (((int) ($preview_stats['original'] ?? 0)) - ((int) ($preview_stats['exact_duplicates'] ?? 0)) - ((int) ($preview_stats['near_duplicates'] ?? 0)) - ((int) ($preview_stats['global_duplicates'] ?? 0)) - ((int) ($preview_stats['stale_removed'] ?? 0)) - ((int) ($preview_stats['unreferenced_removed'] ?? 0)) - ((int) ($preview_stats['entity_name_mismatch_removed'] ?? 0)) - ((int) ($preview_stats['entity_name_cap_removed'] ?? 0)) - ((int) ($preview_stats['trimmed'] ?? 0)))); ?></li>
 									<li><strong><?php esc_html_e('Exact duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['exact_duplicates'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Near duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['near_duplicates'] ?? 0))); ?></li>
+									<li><strong><?php esc_html_e('Global duplicates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['global_duplicates'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Stale candidates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['stale_removed'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Unreferenced candidates:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['unreferenced_removed'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Missing selected entity name:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['entity_name_mismatch_removed'] ?? 0))); ?></li>
+									<li><strong><?php esc_html_e('Global entity-name cap removed:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['entity_name_cap_removed'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Critical entries preserved:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['critical_preserved'] ?? 0))); ?></li>
 									<li><strong><?php esc_html_e('Trimmed to cap:', 'perchance-memory-manager'); ?></strong> <?php echo esc_html((string) ((int) ($preview_stats['trimmed'] ?? 0))); ?></li>
 								</ul>
@@ -1716,9 +1792,11 @@ class PMM_Admin {
 								$preview_groups = [
 									'exact_duplicates' => __('Sample exact duplicates to remove', 'perchance-memory-manager'),
 									'near_duplicates' => __('Sample near duplicates to remove', 'perchance-memory-manager'),
+									'global_duplicates' => __('Sample global duplicates to remove', 'perchance-memory-manager'),
 									'stale_removed' => __('Sample stale candidates to remove', 'perchance-memory-manager'),
 									'unreferenced_removed' => __('Sample unreferenced candidates to remove', 'perchance-memory-manager'),
 									'entity_name_mismatch_removed' => __('Sample entries missing selected entity name', 'perchance-memory-manager'),
+									'entity_name_cap_removed' => __('Sample entries removed by global entity-name cap', 'perchance-memory-manager'),
 									'trimmed' => __('Sample entries trimmed by cap', 'perchance-memory-manager'),
 								];
 								foreach ($preview_groups as $group_key => $group_label) :
@@ -1730,9 +1808,17 @@ class PMM_Admin {
 									<details style="margin-top:8px;">
 										<summary><?php echo esc_html($group_label); ?> (<?php echo esc_html((string) count($items)); ?>)</summary>
 										<ul style="margin:8px 0 0 16px;">
-											<?php foreach ($items as $item) : ?>
-												<li><?php echo esc_html((string) $item); ?></li>
-											<?php endforeach; ?>
+												<?php foreach ($items as $item) :
+													$item_entry = is_array($item) ? (string) ($item['entry'] ?? '') : (string) $item;
+													$item_matched = is_array($item) ? (string) ($item['matched'] ?? '') : '';
+												?>
+													<li>
+														<?php echo esc_html($item_entry); ?>
+														<?php if ($item_matched !== '') : ?>
+															<span style="display:block;margin-top:2px;color:#666;font-size:0.9em;"><?php esc_html_e('↳ Matched:', 'perchance-memory-manager'); ?> <?php echo esc_html($item_matched); ?></span>
+														<?php endif; ?>
+													</li>
+												<?php endforeach; ?>
 										</ul>
 									</details>
 								<?php endforeach; ?>
@@ -1748,15 +1834,18 @@ class PMM_Admin {
 											<input type="hidden" name="action" value="pmm_apply_prune_preview_review">
 											<input type="hidden" name="pmm_prune_section" value="<?php echo esc_attr($preview_section); ?>">
 											<input type="hidden" name="pmm_prune_entity" value="<?php echo esc_attr($preview_entity); ?>">
+											<input type="hidden" name="pmm_prune_global_mode" value="<?php echo $preview_global_mode ? '1' : '0'; ?>">
 											<input type="hidden" name="pmm_prune_review_rows" id="pmm_prune_review_rows" value="[]">
 											<table class="widefat striped" style="table-layout:fixed;width:100%;margin-top:6px;">
 												<thead>
 													<tr>
-														<th style="width:14%;"><?php esc_html_e('Reason', 'perchance-memory-manager'); ?></th>
-														<th style="width:24%;"><?php esc_html_e('Original Entry', 'perchance-memory-manager'); ?></th>
-														<th style="width:46%;"><?php esc_html_e('Edited Entry', 'perchance-memory-manager'); ?></th>
-														<th style="width:10%;"><?php esc_html_e('Action', 'perchance-memory-manager'); ?></th>
-														<th style="width:6%;"><?php esc_html_e('Critical', 'perchance-memory-manager'); ?></th>
+														<th style="width:12%;"><?php esc_html_e('Reason', 'perchance-memory-manager'); ?></th>
+														<th style="width:10%;"><?php esc_html_e('Section', 'perchance-memory-manager'); ?></th>
+														<th style="width:12%;"><?php esc_html_e('Entity', 'perchance-memory-manager'); ?></th>
+														<th style="width:20%;"><?php esc_html_e('Original Entry', 'perchance-memory-manager'); ?></th>
+														<th style="width:34%;"><?php esc_html_e('Edited Entry', 'perchance-memory-manager'); ?></th>
+														<th style="width:8%;"><?php esc_html_e('Action', 'perchance-memory-manager'); ?></th>
+														<th style="width:4%;"><?php esc_html_e('Critical', 'perchance-memory-manager'); ?></th>
 													</tr>
 												</thead>
 												<tbody>
@@ -1764,19 +1853,31 @@ class PMM_Admin {
 														<?php
 														$source_index = isset($row['source_index']) ? (int) $row['source_index'] : $row_index;
 														$source_entry = isset($row['source_entry']) ? (string) $row['source_entry'] : '';
+														$source_section = isset($row['source_section']) ? (string) $row['source_section'] : $preview_section;
+														$source_entity = isset($row['source_entity']) ? (string) $row['source_entity'] : $preview_entity;
+														$source_bucket = isset($row['source_bucket']) ? (string) $row['source_bucket'] : ($source_entity !== '' ? $source_entity : '__entries__');
 														$reason_label = isset($row['reason_label']) ? (string) $row['reason_label'] : __('Prune candidate', 'perchance-memory-manager');
+														$matched_entry = isset($row['matched_entry']) ? (string) $row['matched_entry'] : '';
+														$default_action = isset($row['default_action']) ? (string) $row['default_action'] : 'keep';
 														if ($source_entry === '') {
 															continue;
 														}
 														?>
-														<tr class="pmm-prune-review-row" data-source-index="<?php echo esc_attr((string) $source_index); ?>" data-source-entry="<?php echo esc_attr($source_entry); ?>">
+														<tr class="pmm-prune-review-row" data-source-index="<?php echo esc_attr((string) $source_index); ?>" data-source-entry="<?php echo esc_attr($source_entry); ?>" data-source-section="<?php echo esc_attr($source_section); ?>" data-source-entity="<?php echo esc_attr($source_entity); ?>" data-source-bucket="<?php echo esc_attr($source_bucket); ?>">
 															<td style="white-space:pre-wrap;"><?php echo esc_html($reason_label); ?></td>
-															<td style="white-space:pre-wrap;"><?php echo esc_html($source_entry); ?></td>
+															<td style="white-space:pre-wrap;"><?php echo esc_html($source_section); ?></td>
+															<td style="white-space:pre-wrap;"><?php echo esc_html($source_entity !== '' ? $source_entity : __('(section-level)', 'perchance-memory-manager')); ?></td>
+															<td style="white-space:pre-wrap;">
+																<?php echo esc_html($source_entry); ?>
+																<?php if ($matched_entry !== '') : ?>
+																	<span style="display:block;margin-top:4px;padding:4px 6px;background:#f0f0f0;border-left:3px solid #aaa;font-size:0.9em;color:#444;"><?php esc_html_e('↳ Matched:', 'perchance-memory-manager'); ?> <?php echo esc_html($matched_entry); ?></span>
+																<?php endif; ?>
+															</td>
 															<td><textarea class="large-text code pmm-prune-review-entry" rows="2" style="width:100%;max-width:100%;"><?php echo esc_textarea($source_entry); ?></textarea></td>
 															<td>
 																<select class="pmm-prune-review-action" style="width:100%;">
-																	<option value="remove" selected><?php esc_html_e('Remove', 'perchance-memory-manager'); ?></option>
-																	<option value="keep"><?php esc_html_e('Keep', 'perchance-memory-manager'); ?></option>
+																	<option value="keep" <?php selected($default_action, 'keep'); ?>><?php esc_html_e('Keep', 'perchance-memory-manager'); ?></option>
+																	<option value="remove" <?php selected($default_action, 'remove'); ?>><?php esc_html_e('Remove', 'perchance-memory-manager'); ?></option>
 																	<option value="edit"><?php esc_html_e('Edit', 'perchance-memory-manager'); ?></option>
 																</select>
 															</td>
@@ -1807,12 +1908,18 @@ class PMM_Admin {
 														return;
 													}
 													var sourceIndex = row.getAttribute('data-source-index') || '';
+													var sourceSection = row.getAttribute('data-source-section') || '';
+													var sourceEntity = row.getAttribute('data-source-entity') || '';
+													var sourceBucket = row.getAttribute('data-source-bucket') || '';
 													var actionEl = row.querySelector('.pmm-prune-review-action');
 													var entryEl = row.querySelector('.pmm-prune-review-entry');
 													var criticalEl = row.querySelector('.pmm-prune-review-critical');
 													rows.push({
 														source_index: sourceIndex,
 														source_entry: sourceEntry,
+														source_section: sourceSection,
+														source_entity: sourceEntity,
+														source_bucket: sourceBucket,
 														entry: entryEl ? (entryEl.value || sourceEntry) : sourceEntry,
 														action: actionEl ? (actionEl.value || 'remove') : 'remove',
 														critical: criticalEl && criticalEl.checked ? '1' : '0'
@@ -3194,6 +3301,26 @@ class PMM_Admin {
 				'percent' => 96,
 				'label' => __('Rendering', 'perchance-memory-manager'),
 				'detail' => __('Building the final output file.', 'perchance-memory-manager'),
+			];
+		}
+
+		if ($stage === 'prune_global') {
+			$total = max(1, count((array) ($job['targets'] ?? [])));
+			$done = min($total, (int) ($job['target_index'] ?? 0));
+			$ratio = $done / $total;
+
+			return [
+				'percent' => (int) floor($ratio * 95),
+				'label' => __('Global Prune', 'perchance-memory-manager'),
+				'detail' => sprintf(__('Pruned %1$d of %2$d section/entity buckets.', 'perchance-memory-manager'), $done, $total),
+			];
+		}
+
+		if ($stage === 'prune_global_finalize') {
+			return [
+				'percent' => 98,
+				'label' => __('Finalizing Global Prune', 'perchance-memory-manager'),
+				'detail' => __('Applying global cap and building final review queue.', 'perchance-memory-manager'),
 			];
 		}
 

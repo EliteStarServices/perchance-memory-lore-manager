@@ -8,7 +8,7 @@ class PMM_Plugin {
 	private $job_ttl = 2 * HOUR_IN_SECONDS;
 	private $line_batch_size = 3000;
 	private $dedupe_batch_items = 60;
-	private $batch_time_budget_seconds = 30;
+	private $batch_time_budget_seconds = 20;
 	private $version_retention = 10;
 	private $similarity_max_pairs_per_run = 50000;
 	private $similarity_max_entities_per_section = 500;
@@ -16,7 +16,7 @@ class PMM_Plugin {
 	public function init() {
 		$this->line_batch_size = max(300, (int) apply_filters('pmm_line_batch_size', $this->line_batch_size));
 		$this->dedupe_batch_items = max(10, (int) apply_filters('pmm_dedupe_batch_items', $this->dedupe_batch_items));
-		$this->batch_time_budget_seconds = max(8, min(45, (int) apply_filters('pmm_batch_time_budget_seconds', $this->batch_time_budget_seconds)));
+		$this->batch_time_budget_seconds = max(8, min(30, (int) apply_filters('pmm_batch_time_budget_seconds', $this->batch_time_budget_seconds)));
 		$this->similarity_max_pairs_per_run = max(1000, (int) apply_filters('pmm_similarity_max_pairs_per_run', $this->similarity_max_pairs_per_run));
 		$this->similarity_max_entities_per_section = max(50, (int) apply_filters('pmm_similarity_max_entities_per_section', $this->similarity_max_entities_per_section));
 		$this->maybe_migrate_default_format_to_txt();
@@ -382,7 +382,7 @@ class PMM_Plugin {
 		}
 
 		if (function_exists('set_time_limit')) {
-			@set_time_limit(40);
+			@set_time_limit(30);
 		}
 
 		$deadline = microtime(true) + $this->batch_time_budget_seconds;
@@ -393,6 +393,25 @@ class PMM_Plugin {
 
 		if ($state['stage'] === 'dedupe') {
 			$state = $this->run_dedupe_batch($state, $deadline);
+		}
+
+		if ($state['stage'] === 'prune_global') {
+			$state = $this->run_prune_global_batch($state, $deadline);
+		}
+
+		if ($state['stage'] === 'prune_global_finalize') {
+			$this->finish_prune_global_batch($state);
+
+			$this->delete_job_state($job_id);
+
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_prune_preview' => 1,
+				'pmm_prune_global_mode' => 1,
+				'pmm_prune_section' => isset($state['section']) ? (string) $state['section'] : 'Characters',
+				'pmm_prune_entity' => isset($state['entity']) ? (string) $state['entity'] : '',
+			], admin_url('admin.php')));
+			exit;
 		}
 
 		if ($state['stage'] === 'render') {
@@ -1950,12 +1969,29 @@ class PMM_Plugin {
 
 		$section = isset($_POST['pmm_prune_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_section'])) : 'Characters';
 		$entity = isset($_POST['pmm_prune_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_entity'])) : '';
-		$max_keep = isset($_POST['pmm_prune_max_keep']) ? max(50, min(300, (int) $_POST['pmm_prune_max_keep'])) : 300;
+		$global_mode = !empty($_POST['pmm_prune_global_mode']);
+		$global_duplicate_detection = $global_mode && !empty($_POST['pmm_prune_global_duplicate_detection']);
+		$global_entity_name_cap_enabled = !empty($_POST['pmm_prune_global_entity_name_cap_enabled']);
+		$global_entity_name_cap_value = isset($_POST['pmm_prune_global_entity_name_cap']) ? max(0, min(4000, (int) $_POST['pmm_prune_global_entity_name_cap'])) : 1350;
+		$global_entity_name_cap = ($global_mode && $global_entity_name_cap_enabled) ? $global_entity_name_cap_value : 0;
+		$global_entity_name_cap_ignore_enabled = isset($_POST['pmm_prune_global_entity_name_cap_ignore_enabled']) ? !empty($_POST['pmm_prune_global_entity_name_cap_ignore_enabled']) : true;
+		$global_entity_name_cap_ignore_entity = isset($_POST['pmm_prune_global_entity_name_cap_ignore_entity'])
+			? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_global_entity_name_cap_ignore_entity']))
+			: 'DJa';
+		$max_keep = isset($_POST['pmm_prune_max_keep']) ? max(50, min(500, (int) $_POST['pmm_prune_max_keep'])) : 350;
 		$remove_stale = !empty($_POST['pmm_prune_remove_stale']);
 		$remove_unreferenced = !empty($_POST['pmm_prune_remove_unreferenced']);
 		$require_entity_name_match = !empty($_POST['pmm_prune_require_entity_name_match']);
 		$collect_nonprefix_review = !empty($_POST['pmm_prune_collect_nonprefix_review']);
 		$preview_only = !empty($_POST['pmm_prune_preview_only']);
+		if ($global_mode) {
+			$preview_only = true;
+			$collect_nonprefix_review = false;
+			$require_entity_name_match = false;
+		} else {
+			$global_duplicate_detection = false;
+			$global_entity_name_cap = 0;
+		}
 		$similarity_threshold = isset($_POST['pmm_prune_similarity_threshold']) ? (float) wp_unslash((string) $_POST['pmm_prune_similarity_threshold']) : 0.90;
 		$similarity_threshold = min(0.98, max(0.75, $similarity_threshold));
 		$unreferenced_threshold = isset($_POST['pmm_prune_unreferenced_threshold']) ? (float) wp_unslash((string) $_POST['pmm_prune_unreferenced_threshold']) : 0.60;
@@ -1970,58 +2006,47 @@ class PMM_Plugin {
 			$this->redirect_with_error('entity_update_missing');
 		}
 
-		$bucket_key = in_array($section, $this->section_level_sections(), true) && $entity === '' ? '__entries__' : $entity;
-		if ($bucket_key === '' || !isset($cleaned[$section][$bucket_key]) || !is_array($cleaned[$section][$bucket_key])) {
-			$this->redirect_with_error('entity_update_missing');
-		}
-
 		$stats = [
-			'original' => count((array) $cleaned[$section][$bucket_key]),
+			'original' => 0,
 			'exact_duplicates' => 0,
 			'near_duplicates' => 0,
+			'global_duplicates' => 0,
 			'stale_removed' => 0,
 			'unreferenced_removed' => 0,
 			'entity_name_mismatch_removed' => 0,
+			'entity_name_cap_removed' => 0,
 			'critical_preserved' => 0,
 			'trimmed' => 0,
 		];
 		$report = [
 			'exact_duplicates' => [],
 			'near_duplicates' => [],
+			'global_duplicates' => [],
 			'stale_removed' => [],
 			'unreferenced_removed' => [],
 			'entity_name_mismatch_removed' => [],
+			'entity_name_cap_removed' => [],
 			'trimmed' => [],
 		];
 
 		$known_entities = $this->collect_known_entity_names($cleaned);
 		$critical_rules = $this->get_prune_critical_entry_rules();
 
-		$pruned_items = $this->prune_entity_entry_list(
-			(array) $cleaned[$section][$bucket_key],
-			$max_keep,
-			$remove_stale,
-			$similarity_threshold,
-			$stats,
-			$report,
-			$remove_unreferenced,
-			$known_entities,
-			$unreferenced_threshold,
-			$critical_rules,
-			$section,
-			$entity,
-			$require_entity_name_match
-		);
+		$targets = $global_mode
+			? $this->collect_global_prune_targets($cleaned)
+			: $this->collect_single_prune_target($cleaned, $section, $entity);
 
-		$nonprefix_review_rows = [];
-		if ($collect_nonprefix_review && $entity !== '' && !in_array($section, $this->section_level_sections(), true)) {
-			$nonprefix_review_rows = $this->collect_nonprefix_entity_entries((array) $cleaned[$section][$bucket_key], $entity);
+		if (empty($targets)) {
+			$this->redirect_with_error('entity_update_missing');
 		}
 
-		$review_candidates = $this->build_prune_review_candidates((array) $cleaned[$section][$bucket_key], $report);
-
-		if ($preview_only) {
-			set_transient('pmm_prune_preview_' . get_current_user_id(), [
+		if ($global_mode) {
+			$job_id = $this->generate_job_id();
+			$state = [
+				'stage' => 'prune_global',
+				'job_type' => 'prune_global',
+				'user_id' => get_current_user_id(),
+				'created_at' => time(),
 				'section' => $section,
 				'entity' => $entity,
 				'max_keep' => $max_keep,
@@ -2029,15 +2054,178 @@ class PMM_Plugin {
 				'remove_stale' => $remove_stale ? 1 : 0,
 				'remove_unreferenced' => $remove_unreferenced ? 1 : 0,
 				'require_entity_name_match' => $require_entity_name_match ? 1 : 0,
+				'global_duplicate_detection' => $global_duplicate_detection ? 1 : 0,
+				'global_entity_name_cap' => $global_entity_name_cap,
+				'global_entity_name_cap_ignore_enabled' => $global_entity_name_cap_ignore_enabled ? 1 : 0,
+				'global_entity_name_cap_ignore_entity' => $global_entity_name_cap_ignore_entity,
+				'collect_nonprefix_review' => 0,
+				'unreferenced_threshold' => $unreferenced_threshold,
+				'known_entities' => $known_entities,
+				'critical_rules' => $critical_rules,
+				'targets' => array_values((array) $targets),
+				'target_index' => 0,
+				'processed_targets' => [],
+				'global_dedupe_state' => $global_duplicate_detection ? ['exact' => [], 'near_pool' => []] : null,
+				'stats' => [
+					'original' => 0,
+					'exact_duplicates' => 0,
+					'near_duplicates' => 0,
+					'global_duplicates' => 0,
+					'stale_removed' => 0,
+					'unreferenced_removed' => 0,
+					'entity_name_mismatch_removed' => 0,
+					'entity_name_cap_removed' => 0,
+					'critical_preserved' => 0,
+					'trimmed' => 0,
+				],
+				'report' => [
+					'exact_duplicates' => [],
+					'near_duplicates' => [],
+					'global_duplicates' => [],
+					'stale_removed' => [],
+					'unreferenced_removed' => [],
+					'entity_name_mismatch_removed' => [],
+					'entity_name_cap_removed' => [],
+					'trimmed' => [],
+				],
+			];
+
+			$this->save_job_state($job_id, $state);
+
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_processing' => 1,
+				'pmm_job' => $job_id,
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$nonprefix_review_rows = [];
+		$review_candidates = [];
+		$processed_targets = [];
+		$global_dedupe_state = $global_duplicate_detection ? [
+			'exact' => [],
+			'near_pool' => [],
+		] : null;
+		$time_budget_exceeded = false;
+
+		foreach ($targets as $target_idx => $target) {
+
+			$target_section = (string) $target['section'];
+			$target_entity = (string) $target['entity'];
+			$target_bucket_key = (string) $target['bucket_key'];
+			$target_items = (array) $target['items'];
+
+			$target_stats = [
+				'original' => count($target_items),
+				'exact_duplicates' => 0,
+				'near_duplicates' => 0,
+				'global_duplicates' => 0,
+				'stale_removed' => 0,
+				'unreferenced_removed' => 0,
+				'entity_name_mismatch_removed' => 0,
+				'entity_name_cap_removed' => 0,
+				'critical_preserved' => 0,
+				'trimmed' => 0,
+			];
+			$target_report = [
+				'exact_duplicates' => [],
+				'near_duplicates' => [],
+				'global_duplicates' => [],
+				'stale_removed' => [],
+				'unreferenced_removed' => [],
+				'entity_name_mismatch_removed' => [],
+				'entity_name_cap_removed' => [],
+				'trimmed' => [],
+			];
+
+			$pruned_items = $this->prune_entity_entry_list(
+				$target_items,
+				$max_keep,
+				$remove_stale,
+				$similarity_threshold,
+				$target_stats,
+				$target_report,
+				$remove_unreferenced,
+				$known_entities,
+				$unreferenced_threshold,
+				$critical_rules,
+				$target_section,
+				$target_entity,
+				$require_entity_name_match,
+				$global_dedupe_state
+			);
+
+			$stats['original'] += (int) $target_stats['original'];
+			$stats['exact_duplicates'] += (int) $target_stats['exact_duplicates'];
+			$stats['near_duplicates'] += (int) $target_stats['near_duplicates'];
+			$stats['global_duplicates'] += (int) $target_stats['global_duplicates'];
+			$stats['stale_removed'] += (int) $target_stats['stale_removed'];
+			$stats['unreferenced_removed'] += (int) $target_stats['unreferenced_removed'];
+			$stats['entity_name_mismatch_removed'] += (int) $target_stats['entity_name_mismatch_removed'];
+			$stats['entity_name_cap_removed'] += (int) $target_stats['entity_name_cap_removed'];
+			$stats['critical_preserved'] += (int) $target_stats['critical_preserved'];
+			$stats['trimmed'] += (int) $target_stats['trimmed'];
+
+			foreach ($report as $group_key => $items) {
+				$report[$group_key] = array_merge((array) $report[$group_key], (array) ($target_report[$group_key] ?? []));
+			}
+
+			if (!$global_mode && $collect_nonprefix_review && $target_entity !== '' && !in_array($target_section, $this->section_level_sections(), true)) {
+				$nonprefix_review_rows = $this->collect_nonprefix_entity_entries($target_items, $target_entity);
+			}
+
+			$processed_targets[] = [
+				'section' => $target_section,
+				'entity' => $target_entity,
+				'bucket_key' => $target_bucket_key,
+				'source_items' => $target_items,
+				'items' => $pruned_items,
+				'report' => $target_report,
+			];
+		}
+
+		foreach ($processed_targets as $target_result) {
+			$review_candidates = array_merge(
+				$review_candidates,
+				$this->build_prune_review_candidates(
+					(array) $target_result['source_items'],
+					(array) $target_result['report'],
+					(string) $target_result['section'],
+					(string) $target_result['entity'],
+					(string) $target_result['bucket_key']
+				)
+			);
+
+			if (!$preview_only) {
+				$cleaned[(string) $target_result['section']][(string) $target_result['bucket_key']] = array_values((array) $target_result['items']);
+			}
+		}
+
+		if ($preview_only) {
+			set_transient('pmm_prune_preview_' . get_current_user_id(), [
+				'section' => $section,
+				'entity' => $entity,
+				'global_mode' => $global_mode ? 1 : 0,
+				'time_budget_exceeded' => $time_budget_exceeded ? 1 : 0,
+				'max_keep' => $max_keep,
+				'similarity_threshold' => $similarity_threshold,
+				'remove_stale' => $remove_stale ? 1 : 0,
+				'remove_unreferenced' => $remove_unreferenced ? 1 : 0,
+				'require_entity_name_match' => $require_entity_name_match ? 1 : 0,
+				'global_duplicate_detection' => $global_duplicate_detection ? 1 : 0,
+				'global_entity_name_cap' => $global_entity_name_cap,
 				'collect_nonprefix_review' => $collect_nonprefix_review ? 1 : 0,
 				'unreferenced_threshold' => $unreferenced_threshold,
 				'stats' => $stats,
 				'report' => [
 					'exact_duplicates' => array_slice((array) $report['exact_duplicates'], 0, 200),
 					'near_duplicates' => array_slice((array) $report['near_duplicates'], 0, 200),
+					'global_duplicates' => array_slice((array) $report['global_duplicates'], 0, 300),
 					'stale_removed' => array_slice((array) $report['stale_removed'], 0, 200),
 					'unreferenced_removed' => array_slice((array) $report['unreferenced_removed'], 0, 200),
 					'entity_name_mismatch_removed' => array_slice((array) $report['entity_name_mismatch_removed'], 0, 200),
+					'entity_name_cap_removed' => array_slice((array) $report['entity_name_cap_removed'], 0, 300),
 					'trimmed' => array_slice((array) $report['trimmed'], 0, 300),
 					'review_candidates' => array_values((array) $review_candidates),
 					'nonprefix_review' => array_slice((array) $nonprefix_review_rows, 0, 2000),
@@ -2047,6 +2235,7 @@ class PMM_Plugin {
 			wp_safe_redirect(add_query_arg([
 				'page' => 'perchance-memory-manager',
 				'pmm_prune_preview' => 1,
+				'pmm_prune_global_mode' => $global_mode ? 1 : 0,
 				'pmm_prune_section' => $section,
 				'pmm_prune_entity' => $entity,
 			], admin_url('admin.php')));
@@ -2054,7 +2243,6 @@ class PMM_Plugin {
 		}
 
 		delete_transient('pmm_prune_preview_' . get_current_user_id());
-		$cleaned[$section][$bucket_key] = $pruned_items;
 
 		$renderer = new PMM_Renderer();
 		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
@@ -2079,19 +2267,22 @@ class PMM_Plugin {
 
 		set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
 
-		$kept = count((array) $cleaned[$section][$bucket_key]);
+		$kept = max(0, (int) $stats['original'] - (int) $stats['exact_duplicates'] - (int) $stats['near_duplicates'] - (int) $stats['global_duplicates'] - (int) $stats['stale_removed'] - (int) $stats['unreferenced_removed'] - (int) $stats['entity_name_mismatch_removed'] - (int) $stats['entity_name_cap_removed'] - (int) $stats['trimmed']);
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
 			'pmm_entity_pruned' => 1,
+			'pmm_prune_global_mode' => $global_mode ? 1 : 0,
 			'pmm_prune_section' => $section,
 			'pmm_prune_entity' => $entity,
 			'pmm_prune_before' => (string) $stats['original'],
 			'pmm_prune_after' => (string) $kept,
 			'pmm_prune_exact' => (string) $stats['exact_duplicates'],
 			'pmm_prune_near' => (string) $stats['near_duplicates'],
+			'pmm_prune_global_dup' => (string) $stats['global_duplicates'],
 			'pmm_prune_stale' => (string) $stats['stale_removed'],
 			'pmm_prune_unref' => (string) $stats['unreferenced_removed'],
 			'pmm_prune_entity_mismatch' => (string) $stats['entity_name_mismatch_removed'],
+			'pmm_prune_entity_cap_removed' => (string) $stats['entity_name_cap_removed'],
 			'pmm_prune_critical' => (string) $stats['critical_preserved'],
 			'pmm_prune_trimmed' => (string) $stats['trimmed'],
 		], admin_url('admin.php')));
@@ -2117,6 +2308,7 @@ class PMM_Plugin {
 
 		$section = isset($_POST['pmm_prune_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_section'])) : 'Characters';
 		$entity = isset($_POST['pmm_prune_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_entity'])) : '';
+		$global_mode = !empty($_POST['pmm_prune_global_mode']);
 
 		$valid_sections = $this->valid_sections();
 		if (!in_array($section, $valid_sections, true)) {
@@ -2313,15 +2505,11 @@ class PMM_Plugin {
 
 		$section = isset($_POST['pmm_prune_section']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_section'])) : 'Characters';
 		$entity = isset($_POST['pmm_prune_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_prune_entity'])) : '';
+		$global_mode = !empty($_POST['pmm_prune_global_mode']);
 
 		$valid_sections = $this->valid_sections();
 		if (!in_array($section, $valid_sections, true)) {
 			$section = 'Characters';
-		}
-
-		$bucket_key = in_array($section, $this->section_level_sections(), true) && $entity === '' ? '__entries__' : $entity;
-		if ($bucket_key === '' || !isset($cleaned[$section]) || !is_array($cleaned[$section]) || !isset($cleaned[$section][$bucket_key]) || !is_array($cleaned[$section][$bucket_key])) {
-			$this->redirect_with_error('entity_update_missing');
 		}
 
 		$rows_json = isset($_POST['pmm_prune_review_rows']) ? (string) wp_unslash($_POST['pmm_prune_review_rows']) : '[]';
@@ -2329,16 +2517,120 @@ class PMM_Plugin {
 		if (!is_array($rows)) {
 			$rows = [];
 		}
-
-		$current_items = array_values((array) $cleaned[$section][$bucket_key]);
-		$used_indexes = [];
-		$remove_indexes = [];
-		$replace_by_index = [];
 		$critical_updates = [];
 		$reviewed = 0;
 		$removed = 0;
 		$updated = 0;
 		$critical_marked = 0;
+
+		if ($global_mode) {
+			$bucket_rows = [];
+			foreach ($rows as $row) {
+				if (!is_array($row)) {
+					continue;
+				}
+
+				$row_section = isset($row['source_section']) ? sanitize_text_field((string) $row['source_section']) : '';
+				$row_entity = isset($row['source_entity']) ? sanitize_text_field((string) $row['source_entity']) : '';
+				$row_bucket = isset($row['source_bucket']) ? sanitize_text_field((string) $row['source_bucket']) : '';
+				if ($row_section === '' || $row_bucket === '') {
+					continue;
+				}
+
+				if (!isset($cleaned[$row_section]) || !is_array($cleaned[$row_section]) || !isset($cleaned[$row_section][$row_bucket]) || !is_array($cleaned[$row_section][$row_bucket])) {
+					continue;
+				}
+
+				$bucket_id = $row_section . '|' . $row_bucket;
+				if (!isset($bucket_rows[$bucket_id])) {
+					$bucket_rows[$bucket_id] = [
+						'section' => $row_section,
+						'entity' => $row_bucket === '__entries__' ? '' : $row_entity,
+						'bucket' => $row_bucket,
+						'rows' => [],
+					];
+				}
+				$bucket_rows[$bucket_id]['rows'][] = $row;
+			}
+
+			foreach ($bucket_rows as $bucket_group) {
+				$group_section = (string) $bucket_group['section'];
+				$group_entity = (string) $bucket_group['entity'];
+				$group_bucket = (string) $bucket_group['bucket'];
+				$current_items = array_values((array) $cleaned[$group_section][$group_bucket]);
+				$next_items = $this->apply_prune_review_rows_to_bucket_items($current_items, (array) $bucket_group['rows'], $group_section, $group_entity, $reviewed, $removed, $updated, $critical_marked, $critical_updates);
+				$cleaned[$group_section][$group_bucket] = array_values($next_items);
+			}
+		} else {
+			$bucket_key = in_array($section, $this->section_level_sections(), true) && $entity === '' ? '__entries__' : $entity;
+			if ($bucket_key === '' || !isset($cleaned[$section]) || !is_array($cleaned[$section]) || !isset($cleaned[$section][$bucket_key]) || !is_array($cleaned[$section][$bucket_key])) {
+				$this->redirect_with_error('entity_update_missing');
+			}
+
+			$current_items = array_values((array) $cleaned[$section][$bucket_key]);
+			$next_items = $this->apply_prune_review_rows_to_bucket_items($current_items, $rows, $section, $entity, $reviewed, $removed, $updated, $critical_marked, $critical_updates);
+			$cleaned[$section][$bucket_key] = array_values($next_items);
+		}
+
+		if (!empty($critical_updates)) {
+			$current_critical = $this->get_prune_critical_entry_rules();
+			foreach ($critical_updates as $critical_row) {
+				$key = $this->build_entry_rule_key((string) $critical_row['section'], (string) $critical_row['entity'], (string) $critical_row['entry']);
+				$current_critical[$key] = [
+					'section' => (string) $critical_row['section'],
+					'entity' => (string) $critical_row['entity'],
+					'entry' => (string) $critical_row['entry'],
+				];
+			}
+			$this->save_prune_critical_entry_rules($current_critical);
+		}
+
+		delete_transient('pmm_prune_preview_' . get_current_user_id());
+
+		$renderer = new PMM_Renderer();
+		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
+		$output = $renderer->render($cleaned, $format);
+
+		$data['content'] = $output;
+		$data['cleaned_data'] = $cleaned;
+		$data['stats']['sections'] = count($cleaned);
+		$data['stats']['entities'] = PMM_Utils::count_entities($cleaned);
+		$data['stats']['bullets'] = PMM_Utils::count_bullets($cleaned);
+		$data['entity_report'] = $this->build_entity_report_payload([
+			'cleaned' => $cleaned,
+			'entity_report' => ['new_entities' => []],
+		]);
+
+		$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
+		$version_meta = $this->persist_versioned_output($output, $source_filename, $format);
+		if (!empty($version_meta['filename'])) {
+			$data['stats']['version_filename'] = (string) $version_meta['filename'];
+			$data['stats']['version_saved_at'] = (int) $version_meta['saved_at'];
+		}
+
+		set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_entity_updated' => 1,
+			'pmm_prune_global_mode' => $global_mode ? 1 : 0,
+			'pmm_prune_section' => $section,
+			'pmm_prune_entity' => $entity,
+			'pmm_prune_reviewed' => (string) $reviewed,
+			'pmm_prune_removed' => (string) $removed,
+			'pmm_prune_updated' => (string) $updated,
+			'pmm_prune_marked_critical' => (string) $critical_marked,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	private function apply_prune_review_rows_to_bucket_items($current_items, $rows, $section, $entity, &$reviewed, &$removed, &$updated, &$critical_marked, &$critical_updates) {
+		$current_items = array_values((array) $current_items);
+		$rows = is_array($rows) ? $rows : [];
+
+		$used_indexes = [];
+		$remove_indexes = [];
+		$replace_by_index = [];
 
 		foreach ($rows as $row) {
 			if (!is_array($row)) {
@@ -2412,19 +2704,6 @@ class PMM_Plugin {
 			}
 		}
 
-		if (!empty($critical_updates)) {
-			$current_critical = $this->get_prune_critical_entry_rules();
-			foreach ($critical_updates as $critical_row) {
-				$key = $this->build_entry_rule_key((string) $critical_row['section'], (string) $critical_row['entity'], (string) $critical_row['entry']);
-				$current_critical[$key] = [
-					'section' => (string) $critical_row['section'],
-					'entity' => (string) $critical_row['entity'],
-					'entry' => (string) $critical_row['entry'],
-				];
-			}
-			$this->save_prune_critical_entry_rules($current_critical);
-		}
-
 		$next_items = [];
 		foreach ($current_items as $idx => $item) {
 			if (isset($remove_indexes[$idx])) {
@@ -2451,43 +2730,216 @@ class PMM_Plugin {
 			$next_items[] = $item;
 		}
 
-		$cleaned[$section][$bucket_key] = array_values($next_items);
-		delete_transient('pmm_prune_preview_' . get_current_user_id());
+		return $next_items;
+	}
 
-		$renderer = new PMM_Renderer();
-		$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
-		$output = $renderer->render($cleaned, $format);
-
-		$data['content'] = $output;
-		$data['cleaned_data'] = $cleaned;
-		$data['stats']['sections'] = count($cleaned);
-		$data['stats']['entities'] = PMM_Utils::count_entities($cleaned);
-		$data['stats']['bullets'] = PMM_Utils::count_bullets($cleaned);
-		$data['entity_report'] = $this->build_entity_report_payload([
-			'cleaned' => $cleaned,
-			'entity_report' => ['new_entities' => []],
-		]);
-
-		$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
-		$version_meta = $this->persist_versioned_output($output, $source_filename, $format);
-		if (!empty($version_meta['filename'])) {
-			$data['stats']['version_filename'] = (string) $version_meta['filename'];
-			$data['stats']['version_saved_at'] = (int) $version_meta['saved_at'];
+	private function collect_single_prune_target($cleaned, $section, $entity) {
+		$bucket_key = in_array((string) $section, $this->section_level_sections(), true) && trim((string) $entity) === '' ? '__entries__' : (string) $entity;
+		if ($bucket_key === '' || !isset($cleaned[$section]) || !is_array($cleaned[$section]) || !isset($cleaned[$section][$bucket_key]) || !is_array($cleaned[$section][$bucket_key])) {
+			return [];
 		}
 
-		set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
+		return [[
+			'section' => (string) $section,
+			'entity' => $bucket_key === '__entries__' ? '' : (string) $entity,
+			'bucket_key' => (string) $bucket_key,
+			'items' => (array) $cleaned[$section][$bucket_key],
+		]];
+	}
 
-		wp_safe_redirect(add_query_arg([
-			'page' => 'perchance-memory-manager',
-			'pmm_entity_updated' => 1,
-			'pmm_prune_section' => $section,
-			'pmm_prune_entity' => $entity,
-			'pmm_prune_reviewed' => (string) $reviewed,
-			'pmm_prune_removed' => (string) $removed,
-			'pmm_prune_updated' => (string) $updated,
-			'pmm_prune_marked_critical' => (string) $critical_marked,
-		], admin_url('admin.php')));
-		exit;
+	private function collect_global_prune_targets($cleaned) {
+		$targets = [];
+		foreach ($this->valid_sections() as $section) {
+			if ((string) $section === 'World Building') {
+				continue;
+			}
+
+			if (empty($cleaned[$section]) || !is_array($cleaned[$section])) {
+				continue;
+			}
+
+			if (in_array((string) $section, $this->section_level_sections(), true)) {
+				if (isset($cleaned[$section]['__entries__']) && is_array($cleaned[$section]['__entries__'])) {
+					$targets[] = [
+						'section' => (string) $section,
+						'entity' => '',
+						'bucket_key' => '__entries__',
+						'items' => (array) $cleaned[$section]['__entries__'],
+					];
+				}
+				continue;
+			}
+
+			foreach ((array) $cleaned[$section] as $entity => $items) {
+				if (strpos((string) $entity, '__') === 0 || !is_array($items)) {
+					continue;
+				}
+				$targets[] = [
+					'section' => (string) $section,
+					'entity' => (string) $entity,
+					'bucket_key' => (string) $entity,
+					'items' => (array) $items,
+				];
+			}
+		}
+
+		return $targets;
+	}
+
+	private function apply_global_entity_name_cap(&$processed_targets, $global_entity_name_cap, &$stats, &$report, $critical_rules = [], $ignore_entity_enabled = false, $ignore_entity = '') {
+		$cap = max(0, (int) $global_entity_name_cap);
+		if ($cap <= 0 || empty($processed_targets) || !is_array($processed_targets)) {
+			return;
+		}
+
+		$critical_rules = $this->normalize_entry_rule_items($critical_rules);
+		$ignore_entity  = trim((string) $ignore_entity);
+		$remove_map     = [];
+
+		// Pass 1: build a map of entity_key => [target_indexes] for all
+		// non-ignored entities so we know which buckets belong to each entity.
+		$entity_target_map = [];
+		foreach ($processed_targets as $target_index => $target) {
+			$target_entity = isset($target['entity']) ? trim((string) $target['entity']) : '';
+			if ($target_entity === '') {
+				continue;
+			}
+			if (!empty($ignore_entity_enabled) && $ignore_entity !== '' && $this->entity_name_matches_filter($target_entity, $ignore_entity)) {
+				continue;
+			}
+			$entity_key = PMM_Utils::name_fingerprint($target_entity);
+			if ($entity_key === '') {
+				$entity_key = strtolower(trim(str_replace('*', '', $target_entity)));
+			}
+			if ($entity_key === '') {
+				continue;
+			}
+			if (!isset($entity_target_map[$entity_key])) {
+				$entity_target_map[$entity_key] = [];
+			}
+			$entity_target_map[$entity_key][] = $target_index;
+		}
+
+		if (empty($entity_target_map)) {
+			return;
+		}
+
+		// Pass 2: for each entity, collect all referencing entries across all of
+		// that entity's own buckets, check against cap, and mark over-cap entries
+		// for removal. No cross-entity fuzzy scan — uses entry_references_target_entity().
+		foreach ($entity_target_map as $entity_key => $target_indexes) {
+			$entity_candidates = [];
+
+			foreach ($target_indexes as $target_index) {
+				$target         = $processed_targets[$target_index];
+				$target_section = isset($target['section']) ? (string) $target['section'] : '';
+				$target_entity  = isset($target['entity'])  ? trim((string) $target['entity'])  : '';
+				$items          = array_values((array) ($target['items'] ?? []));
+				$total          = max(1, count($items));
+
+				foreach ($items as $item_index => $entry) {
+					$entry = trim((string) $entry);
+					if ($entry === '') {
+						continue;
+					}
+					if (!$this->entry_references_target_entity($entry, $target_entity)) {
+						continue;
+					}
+					if ($this->is_prune_critical_entry($target_section, $target_entity, $entry, $critical_rules)) {
+						continue;
+					}
+					$entry_for_scoring = PMM_Utils::normalize_bullet($entry);
+					$score_data        = $this->entry_prune_importance_score($entry_for_scoring, (int) $item_index, $total, $target_section);
+					$position_ratio    = $total > 1 ? ((float) $item_index / (float) ($total - 1)) : 0.0;
+					$entity_candidates[] = [
+						'target_index'    => (int) $target_index,
+						'item_index'      => (int) $item_index,
+						'entry'           => $entry,
+						'score'           => isset($score_data['score']) ? (float) $score_data['score'] : 0.0,
+						'center_distance' => (float) abs($position_ratio - 0.5),
+					];
+				}
+			}
+
+			// Entity is at or under cap — nothing to do.
+			if (count($entity_candidates) <= $cap) {
+				continue;
+			}
+
+			usort($entity_candidates, static function ($a, $b) {
+				$ls = (float) ($a['score'] ?? 0.0);
+				$rs = (float) ($b['score'] ?? 0.0);
+				if ($ls !== $rs) {
+					return $ls <=> $rs;
+				}
+				$lm = (float) ($a['center_distance'] ?? 1.0);
+				$rm = (float) ($b['center_distance'] ?? 1.0);
+				if ($lm !== $rm) {
+					return $lm <=> $rm;
+				}
+				return ((int) ($a['item_index'] ?? 0)) <=> ((int) ($b['item_index'] ?? 0));
+			});
+
+			$to_remove = count($entity_candidates) - $cap;
+			for ($i = 0; $i < $to_remove; $i++) {
+				$row          = $entity_candidates[$i];
+				$target_index = (int) $row['target_index'];
+				$item_index   = (int) $row['item_index'];
+				$entry        = (string) ($row['entry'] ?? '');
+				if ($entry === '') {
+					continue;
+				}
+
+				if (!isset($remove_map[$target_index])) {
+					$remove_map[$target_index] = [];
+				}
+				$remove_map[$target_index][$item_index] = true;
+
+				++$stats['entity_name_cap_removed'];
+				if (is_array($report)) {
+					$report['entity_name_cap_removed'][] = $entry;
+				}
+
+				if (!isset($processed_targets[$target_index]['report']) || !is_array($processed_targets[$target_index]['report'])) {
+					$processed_targets[$target_index]['report'] = [];
+				}
+				if (!isset($processed_targets[$target_index]['report']['entity_name_cap_removed']) || !is_array($processed_targets[$target_index]['report']['entity_name_cap_removed'])) {
+					$processed_targets[$target_index]['report']['entity_name_cap_removed'] = [];
+				}
+				$processed_targets[$target_index]['report']['entity_name_cap_removed'][] = $entry;
+			}
+		}
+
+		// Apply removal map.
+		foreach ($remove_map as $target_index => $indexes) {
+			$current    = array_values((array) ($processed_targets[$target_index]['items'] ?? []));
+			$next_items = [];
+			foreach ($current as $idx => $entry) {
+				if (!isset($indexes[$idx])) {
+					$next_items[] = (string) $entry;
+				}
+			}
+			$processed_targets[$target_index]['items'] = $next_items;
+		}
+	}
+
+	private function entity_name_matches_filter($entity_name, $filter_name) {
+		$entity_name = trim(str_replace('*', '', (string) $entity_name));
+		$filter_name = trim(str_replace('*', '', (string) $filter_name));
+		if ($entity_name === '' || $filter_name === '') {
+			return false;
+		}
+
+		if (strcasecmp($entity_name, $filter_name) === 0) {
+			return true;
+		}
+
+		$prefix_pattern = '/^' . preg_quote($filter_name, '/') . '(?=$|\s|[:;,.!?\-_\/\(\)\[\]])/iu';
+		if (preg_match($prefix_pattern, $entity_name) === 1) {
+			return true;
+		}
+
+		return PMM_Utils::contains_name_score($entity_name, $filter_name) >= 0.92;
 	}
 
 	public function save_global_entity_report() {
@@ -2904,6 +3356,193 @@ class PMM_Plugin {
 		}
 
 		return $lines;
+	}
+
+	private function run_prune_global_batch($state, $deadline) {
+		$targets = array_values((array) ($state['targets'] ?? []));
+		$total_targets = count($targets);
+		$target_index = (int) ($state['target_index'] ?? 0);
+		$processed_targets = array_values((array) ($state['processed_targets'] ?? []));
+		$stats = is_array($state['stats'] ?? null) ? (array) $state['stats'] : [];
+		$report = is_array($state['report'] ?? null) ? (array) $state['report'] : [];
+		$global_dedupe_state = isset($state['global_dedupe_state']) && is_array($state['global_dedupe_state']) ? (array) $state['global_dedupe_state'] : null;
+		$known_entities = array_values((array) ($state['known_entities'] ?? []));
+		$critical_rules = array_values((array) ($state['critical_rules'] ?? []));
+
+		$max_keep = max(50, min(500, (int) ($state['max_keep'] ?? 350)));
+		$remove_stale = !empty($state['remove_stale']);
+		$remove_unreferenced = !empty($state['remove_unreferenced']);
+		$require_entity_name_match = !empty($state['require_entity_name_match']);
+		$similarity_threshold = min(0.98, max(0.75, (float) ($state['similarity_threshold'] ?? 0.90)));
+		$unreferenced_threshold = min(0.95, max(0.40, (float) ($state['unreferenced_threshold'] ?? 0.60)));
+		$global_entity_name_cap = max(0, (int) ($state['global_entity_name_cap'] ?? 0));
+		$global_entity_name_cap_ignore_enabled = !isset($state['global_entity_name_cap_ignore_enabled']) || !empty($state['global_entity_name_cap_ignore_enabled']);
+		$global_entity_name_cap_ignore_entity = isset($state['global_entity_name_cap_ignore_entity']) ? trim((string) $state['global_entity_name_cap_ignore_entity']) : 'DJa';
+
+		while ($target_index < $total_targets && microtime(true) < $deadline) {
+			$target = (array) $targets[$target_index];
+			$target_section = isset($target['section']) ? (string) $target['section'] : '';
+			$target_entity = isset($target['entity']) ? (string) $target['entity'] : '';
+			$target_bucket_key = isset($target['bucket_key']) ? (string) $target['bucket_key'] : '';
+			$target_items = array_values((array) ($target['items'] ?? []));
+
+			$target_stats = [
+				'original' => count($target_items),
+				'exact_duplicates' => 0,
+				'near_duplicates' => 0,
+				'global_duplicates' => 0,
+				'stale_removed' => 0,
+				'unreferenced_removed' => 0,
+				'entity_name_mismatch_removed' => 0,
+				'entity_name_cap_removed' => 0,
+				'critical_preserved' => 0,
+				'trimmed' => 0,
+			];
+			$target_report = [
+				'exact_duplicates' => [],
+				'near_duplicates' => [],
+				'global_duplicates' => [],
+				'stale_removed' => [],
+				'unreferenced_removed' => [],
+				'entity_name_mismatch_removed' => [],
+				'entity_name_cap_removed' => [],
+				'trimmed' => [],
+			];
+
+			$should_skip_target = (
+				$target_entity !== '' &&
+				$global_entity_name_cap_ignore_enabled &&
+				$global_entity_name_cap_ignore_entity !== '' &&
+				$this->entity_name_matches_filter($target_entity, $global_entity_name_cap_ignore_entity)
+			);
+
+			if ($should_skip_target || $global_entity_name_cap > 0) {
+				$pruned_items = $target_items;
+			} else {
+				$pruned_items = $this->prune_entity_entry_list(
+					$target_items,
+					$max_keep,
+					$remove_stale,
+					$similarity_threshold,
+					$target_stats,
+					$target_report,
+					$remove_unreferenced,
+					$known_entities,
+					$unreferenced_threshold,
+					$critical_rules,
+					$target_section,
+					$target_entity,
+					$require_entity_name_match,
+					$global_dedupe_state
+				);
+			}
+
+			$stats['original'] = (int) ($stats['original'] ?? 0) + (int) $target_stats['original'];
+			$stats['exact_duplicates'] = (int) ($stats['exact_duplicates'] ?? 0) + (int) $target_stats['exact_duplicates'];
+			$stats['near_duplicates'] = (int) ($stats['near_duplicates'] ?? 0) + (int) $target_stats['near_duplicates'];
+			$stats['global_duplicates'] = (int) ($stats['global_duplicates'] ?? 0) + (int) $target_stats['global_duplicates'];
+			$stats['stale_removed'] = (int) ($stats['stale_removed'] ?? 0) + (int) $target_stats['stale_removed'];
+			$stats['unreferenced_removed'] = (int) ($stats['unreferenced_removed'] ?? 0) + (int) $target_stats['unreferenced_removed'];
+			$stats['entity_name_mismatch_removed'] = (int) ($stats['entity_name_mismatch_removed'] ?? 0) + (int) $target_stats['entity_name_mismatch_removed'];
+			$stats['entity_name_cap_removed'] = (int) ($stats['entity_name_cap_removed'] ?? 0) + (int) $target_stats['entity_name_cap_removed'];
+			$stats['critical_preserved'] = (int) ($stats['critical_preserved'] ?? 0) + (int) $target_stats['critical_preserved'];
+			$stats['trimmed'] = (int) ($stats['trimmed'] ?? 0) + (int) $target_stats['trimmed'];
+
+			foreach ($target_report as $group_key => $group_items) {
+				if (!isset($report[$group_key]) || !is_array($report[$group_key])) {
+					$report[$group_key] = [];
+				}
+				$report[$group_key] = array_merge((array) $report[$group_key], (array) $group_items);
+			}
+
+			$processed_targets[] = [
+				'section' => $target_section,
+				'entity' => $target_entity,
+				'bucket_key' => $target_bucket_key,
+				'source_items' => $target_items,
+				'items' => $pruned_items,
+				'report' => $target_report,
+			];
+
+			$target_index++;
+		}
+
+		$state['target_index'] = $target_index;
+		$state['processed_targets'] = $processed_targets;
+		$state['global_dedupe_state'] = $global_dedupe_state;
+		$state['stats'] = $stats;
+		$state['report'] = $report;
+
+		if ($target_index >= $total_targets) {
+			$state['stage'] = 'prune_global_finalize';
+		}
+
+		return $state;
+	}
+
+	private function finish_prune_global_batch($state) {
+		$processed_targets = array_values((array) ($state['processed_targets'] ?? []));
+		$report = is_array($state['report'] ?? null) ? (array) $state['report'] : [];
+		$stats = is_array($state['stats'] ?? null) ? (array) $state['stats'] : [];
+		$critical_rules = array_values((array) ($state['critical_rules'] ?? []));
+
+		$global_entity_name_cap = max(0, (int) ($state['global_entity_name_cap'] ?? 0));
+		$global_entity_name_cap_ignore_enabled = !isset($state['global_entity_name_cap_ignore_enabled']) || !empty($state['global_entity_name_cap_ignore_enabled']);
+		$global_entity_name_cap_ignore_entity = isset($state['global_entity_name_cap_ignore_entity']) ? trim((string) $state['global_entity_name_cap_ignore_entity']) : 'DJa';
+		if ($global_entity_name_cap > 0 && !empty($processed_targets)) {
+			$this->apply_global_entity_name_cap(
+				$processed_targets,
+				$global_entity_name_cap,
+				$stats,
+				$report,
+				$critical_rules,
+				$global_entity_name_cap_ignore_enabled,
+				$global_entity_name_cap_ignore_entity
+			);
+		}
+
+		$review_candidates = [];
+		foreach ($processed_targets as $target_result) {
+			$review_candidates = array_merge(
+				$review_candidates,
+				$this->build_prune_review_candidates(
+					(array) ($target_result['source_items'] ?? []),
+					(array) ($target_result['report'] ?? []),
+					(string) ($target_result['section'] ?? ''),
+					(string) ($target_result['entity'] ?? ''),
+					(string) ($target_result['bucket_key'] ?? '')
+				)
+			);
+		}
+
+		set_transient('pmm_prune_preview_' . get_current_user_id(), [
+			'section' => isset($state['section']) ? (string) $state['section'] : 'Characters',
+			'entity' => isset($state['entity']) ? (string) $state['entity'] : '',
+			'global_mode' => 1,
+			'time_budget_exceeded' => 0,
+			'max_keep' => max(50, min(500, (int) ($state['max_keep'] ?? 350))),
+			'similarity_threshold' => min(0.98, max(0.75, (float) ($state['similarity_threshold'] ?? 0.90))),
+			'remove_stale' => !empty($state['remove_stale']) ? 1 : 0,
+			'remove_unreferenced' => !empty($state['remove_unreferenced']) ? 1 : 0,
+			'require_entity_name_match' => !empty($state['require_entity_name_match']) ? 1 : 0,
+			'global_duplicate_detection' => !empty($state['global_duplicate_detection']) ? 1 : 0,
+			'global_entity_name_cap' => $global_entity_name_cap,
+			'collect_nonprefix_review' => 0,
+			'unreferenced_threshold' => min(0.95, max(0.40, (float) ($state['unreferenced_threshold'] ?? 0.60))),
+			'stats' => $stats,
+			'report' => [
+				'exact_duplicates' => array_slice((array) ($report['exact_duplicates'] ?? []), 0, 200),
+				'near_duplicates' => array_slice((array) ($report['near_duplicates'] ?? []), 0, 200),
+				'global_duplicates' => array_slice((array) ($report['global_duplicates'] ?? []), 0, 300),
+				'stale_removed' => array_slice((array) ($report['stale_removed'] ?? []), 0, 200),
+				'unreferenced_removed' => array_slice((array) ($report['unreferenced_removed'] ?? []), 0, 200),
+				'entity_name_mismatch_removed' => array_slice((array) ($report['entity_name_mismatch_removed'] ?? []), 0, 200),
+				'entity_name_cap_removed' => array_slice((array) ($report['entity_name_cap_removed'] ?? []), 0, 300),
+				'trimmed' => array_slice((array) ($report['trimmed'] ?? []), 0, 300),
+				'review_candidates' => array_values((array) $review_candidates),
+				'nonprefix_review' => [],
+			],
+		], 30 * MINUTE_IN_SECONDS);
 	}
 
 	private function run_parse_batch($state) {
@@ -5722,7 +6361,7 @@ class PMM_Plugin {
 		return true;
 	}
 
-	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null, $remove_unreferenced = false, $known_entities = [], $unreferenced_threshold = 0.60, $critical_rules = [], $section = '', $entity = '', $require_entity_name_match = false) {
+	private function prune_entity_entry_list($items, $max_keep, $remove_stale, $similarity_threshold, &$stats, &$report = null, $remove_unreferenced = false, $known_entities = [], $unreferenced_threshold = 0.60, $critical_rules = [], $section = '', $entity = '', $require_entity_name_match = false, &$global_dedupe_state = null) {
 		$items = array_values(array_filter(array_map(static function($item) {
 			return (string) $item;
 		}, (array) $items), static function($item) {
@@ -5758,15 +6397,20 @@ class PMM_Plugin {
 			if (isset($exact_seen[$fp])) {
 				++$stats['exact_duplicates'];
 				if (is_array($report)) {
-					$report['exact_duplicates'][] = $entry;
+					$report['exact_duplicates'][] = ['entry' => $entry, 'matched' => $exact_seen[$fp]];
 				}
 				continue;
 			}
 
 			$is_near_duplicate = false;
-			foreach ($deduped as $kept) {
+			$matched_near = '';
+			// Compare against a sliding window of the most-recent kept entries
+			// to avoid O(n²) blowup on large buckets in global prune mode.
+			$near_window = count($deduped) > 150 ? array_slice($deduped, -150) : $deduped;
+			foreach ($near_window as $kept) {
 				if ($this->entries_are_similar($entry, $kept, $similarity_threshold)) {
 					$is_near_duplicate = true;
+					$matched_near = $kept;
 					break;
 				}
 			}
@@ -5774,12 +6418,12 @@ class PMM_Plugin {
 			if ($is_near_duplicate) {
 				++$stats['near_duplicates'];
 				if (is_array($report)) {
-					$report['near_duplicates'][] = $entry;
+					$report['near_duplicates'][] = ['entry' => $entry, 'matched' => $matched_near];
 				}
 				continue;
 			}
 
-			$exact_seen[$fp] = true;
+			$exact_seen[$fp] = $entry;
 			$deduped[] = $entry;
 		}
 
@@ -5831,10 +6475,63 @@ class PMM_Plugin {
 			$deduped = $matched;
 		}
 
+		if (is_array($global_dedupe_state)) {
+			if (!isset($global_dedupe_state['exact']) || !is_array($global_dedupe_state['exact'])) {
+				$global_dedupe_state['exact'] = [];
+			}
+			if (!isset($global_dedupe_state['near_pool']) || !is_array($global_dedupe_state['near_pool'])) {
+				$global_dedupe_state['near_pool'] = [];
+			}
+
+			$globally_unique = [];
+			foreach ($deduped as $entry) {
+				$fp = PMM_Utils::fingerprint((string) $entry);
+				if ($fp === '') {
+					continue;
+				}
+
+				if (isset($global_dedupe_state['exact'][$fp])) {
+					++$stats['global_duplicates'];
+					if (is_array($report)) {
+						$report['global_duplicates'][] = ['entry' => $entry, 'matched' => $global_dedupe_state['exact'][$fp]];
+					}
+					continue;
+				}
+
+				$is_global_near_duplicate = false;
+				$matched_global = '';
+				$global_near_window = count($global_dedupe_state['near_pool']) > 300 ? array_slice($global_dedupe_state['near_pool'], -300) : (array) $global_dedupe_state['near_pool'];
+				foreach ($global_near_window as $pool_entry) {
+					if ($this->entries_are_similar($entry, (string) $pool_entry, $similarity_threshold)) {
+						$is_global_near_duplicate = true;
+						$matched_global = (string) $pool_entry;
+						break;
+					}
+				}
+
+				if ($is_global_near_duplicate) {
+					++$stats['global_duplicates'];
+					if (is_array($report)) {
+						$report['global_duplicates'][] = ['entry' => $entry, 'matched' => $matched_global];
+					}
+					continue;
+				}
+
+				$global_dedupe_state['exact'][$fp] = $entry;
+				$global_dedupe_state['near_pool'][] = $entry;
+				if (count($global_dedupe_state['near_pool']) > 300) {
+					$global_dedupe_state['near_pool'] = array_slice($global_dedupe_state['near_pool'], -300);
+				}
+				$globally_unique[] = $entry;
+			}
+
+			$deduped = $globally_unique;
+		}
+
 		$remaining_keep = max(0, (int) $max_keep - count($critical_items));
 		if (count($deduped) > $remaining_keep) {
 			$stats['trimmed'] = count($deduped) - $remaining_keep;
-			$deduped = $this->select_entries_for_prune_keep($deduped, $remaining_keep, $stats, $report);
+			$deduped = $this->select_entries_for_prune_keep($deduped, $remaining_keep, $stats, $report, $section);
 		}
 
 		$stats['critical_preserved'] = (int) ($stats['critical_preserved'] ?? 0) + count($critical_items);
@@ -5842,24 +6539,33 @@ class PMM_Plugin {
 		return array_values(array_merge($critical_items, $deduped));
 	}
 
-	private function build_prune_review_candidates($items, $report) {
+	private function build_prune_review_candidates($items, $report, $section = '', $entity = '', $bucket_key = '') {
 		$current_items = array_values((array) $items);
 		$report = is_array($report) ? $report : [];
 		$group_labels = [
 			'exact_duplicates' => __('Exact duplicate', 'perchance-memory-manager'),
 			'near_duplicates' => __('Near duplicate', 'perchance-memory-manager'),
+			'global_duplicates' => __('Global duplicate', 'perchance-memory-manager'),
 			'stale_removed' => __('Stale candidate', 'perchance-memory-manager'),
 			'unreferenced_removed' => __('Unreferenced candidate', 'perchance-memory-manager'),
 			'entity_name_mismatch_removed' => __('Missing selected entity name', 'perchance-memory-manager'),
+			'entity_name_cap_removed' => __('Global entity-name cap', 'perchance-memory-manager'),
 			'trimmed' => __('Trimmed by cap', 'perchance-memory-manager'),
 		];
 
+		$is_duplicate_group = ['exact_duplicates' => true, 'near_duplicates' => true, 'global_duplicates' => true];
 		$used_indexes = [];
 		$rows = [];
 		foreach ($group_labels as $group_key => $label) {
 			$candidates = isset($report[$group_key]) && is_array($report[$group_key]) ? array_values($report[$group_key]) : [];
 			foreach ($candidates as $candidate) {
-				$entry = trim((string) $candidate);
+				$matched_entry = '';
+				if (is_array($candidate)) {
+					$entry = trim((string) ($candidate['entry'] ?? ''));
+					$matched_entry = trim((string) ($candidate['matched'] ?? ''));
+				} else {
+					$entry = trim((string) $candidate);
+				}
 				if ($entry === '') {
 					continue;
 				}
@@ -5884,15 +6590,41 @@ class PMM_Plugin {
 				$rows[] = [
 					'source_index' => $match_index,
 					'source_entry' => $entry,
+					'source_section' => (string) $section,
+					'source_entity' => (string) $entity,
+					'source_bucket' => (string) $bucket_key,
 					'reason' => $group_key,
 					'reason_label' => $label,
+					'matched_entry' => $matched_entry,
+					'default_action' => isset($is_duplicate_group[$group_key]) ? 'remove' : 'keep',
 				];
+
+				if (isset($is_duplicate_group[$group_key]) && $matched_entry !== '') {
+					$matched_index = -1;
+					foreach ($current_items as $idx => $value) {
+						if (trim((string) $value) !== $matched_entry) {
+							continue;
+						}
+						$matched_index = (int) $idx;
+						break;
+					}
+
+					if ($matched_index >= 0) {
+						$rows[] = [
+							'source_index' => $matched_index,
+							'source_entry' => $matched_entry,
+							'source_section' => (string) $section,
+							'source_entity' => (string) $entity,
+							'source_bucket' => (string) $bucket_key,
+							'reason' => $group_key . '_matched',
+							'reason_label' => sprintf(__('%s (matched)', 'perchance-memory-manager'), $label),
+							'matched_entry' => $entry,
+							'default_action' => 'keep',
+						];
+					}
+				}
 			}
 		}
-
-		usort($rows, static function($a, $b) {
-			return ((int) ($a['source_index'] ?? 0) <=> (int) ($b['source_index'] ?? 0));
-		});
 
 		return $rows;
 	}
@@ -6182,7 +6914,7 @@ class PMM_Plugin {
 		return false;
 	}
 
-	private function select_entries_for_prune_keep($entries, $max_keep, &$stats, &$report = null) {
+	private function select_entries_for_prune_keep($entries, $max_keep, &$stats, &$report = null, $section = '') {
 		$total = count((array) $entries);
 		if ($total <= $max_keep) {
 			return array_values((array) $entries);
@@ -6197,7 +6929,7 @@ class PMM_Plugin {
 				continue;
 			}
 
-			$score_data = $this->entry_prune_importance_score($entry_for_scoring, $idx, $total);
+			$score_data = $this->entry_prune_importance_score($entry_for_scoring, $idx, $total, $section);
 			if ($score_data['critical']) {
 				++$critical_count;
 			}
@@ -6246,10 +6978,11 @@ class PMM_Plugin {
 		return $kept;
 	}
 
-	private function entry_prune_importance_score($entry, $index, $total) {
+	private function entry_prune_importance_score($entry, $index, $total, $section = '') {
 		$entry = trim((string) $entry);
 		$score = 0.0;
 		$critical = false;
+		$is_relationships = (string) $section === 'Relationships';
 
 		$critical_patterns = [
 			'/\b(name|alias|identity|role|occupation|objective|goal|motivation|personality|trait|relationship|family|ally|enemy|ability|skill|power|weakness|limitation|status|condition|location|residence|inventory|equipment|history|backstory|canon|current|now)\b/i',
@@ -6288,18 +7021,37 @@ class PMM_Plugin {
 
 		if ($total > 1) {
 			$position_ratio = (float) $index / (float) ($total - 1);
+			$center_distance = abs($position_ratio - 0.5);
+			$middle_weight = max(0.0, 1.0 - ($center_distance / 0.5));
 
-			// Preserve early introduction context while still preferring newer facts.
-			$intro_window = min(120, max(40, (int) floor($total * 0.12)));
-			if ($index < $intro_window) {
-				$intro_ratio = 1.0 - ((float) $index / max(1.0, (float) $intro_window));
-				$score += 2.2 * $intro_ratio;
+			if (!$is_relationships) {
+				// Preserve early introduction context while still preferring newer facts.
+				$intro_window = min(120, max(40, (int) floor($total * 0.12)));
+				if ($index < $intro_window) {
+					$intro_ratio = 1.0 - ((float) $index / max(1.0, (float) $intro_window));
+					$score += 2.2 * $intro_ratio;
+				}
 			}
 
 			// Newest entries are least likely stale; give them stronger keep priority.
-			$score += 5.0 * ($position_ratio * $position_ratio);
-			if ($position_ratio >= 0.80) {
-				$score += 2.5;
+			if ($is_relationships) {
+				// For Relationships: heavily favor newest entries over old ones
+				$score += 6.5 * ($position_ratio * $position_ratio);
+				if ($position_ratio >= 0.85) {
+					$score += 3.5;
+				}
+			} else {
+				// For other sections: moderate newer entry preference
+				$score += 5.0 * ($position_ratio * $position_ratio);
+				if ($position_ratio >= 0.80) {
+					$score += 2.5;
+				}
+			}
+
+			// When trimming is required, middle-band filler should drop first.
+			$score -= 1.8 * $middle_weight;
+			if (!$critical && $middle_weight >= 0.70 && $word_count <= 10) {
+				$score -= 1.2;
 			}
 		}
 
