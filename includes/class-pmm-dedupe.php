@@ -32,6 +32,8 @@ class PMM_Dedupe {
 	private function dedupe_items($items, $mode, $section, $key, $drop_sequences) {
 		$kept = [];
 		$seen = [];
+		$word_set_cache = [];
+		$near_dup_window = 200;
 
 		foreach ($items as $item) {
 			$item = PMM_Utils::normalize_bullet($item);
@@ -66,13 +68,32 @@ class PMM_Dedupe {
 				continue;
 			}
 
+			if (!isset($word_set_cache[$fp])) {
+				$word_set_cache[$fp] = PMM_Utils::word_set($item);
+				if (count($word_set_cache) > 600) {
+					$word_set_cache = array_slice($word_set_cache, -400, 400, true);
+				}
+			}
+			$item_set = $word_set_cache[$fp];
+
 			$matched = false;
-			foreach ($kept as $i => $existing) {
+			$kept_keys = array_keys($kept);
+			$scan_slice = array_slice($kept_keys, -$near_dup_window, $near_dup_window, true);
+			foreach ($scan_slice as $i) {
+				$existing = $kept[$i];
 				if (!is_string($existing)) {
 					continue;
 				}
+				$existing_fp = PMM_Utils::fingerprint($existing);
+				if (!isset($word_set_cache[$existing_fp])) {
+					$word_set_cache[$existing_fp] = PMM_Utils::word_set($existing);
+					if (count($word_set_cache) > 600) {
+						$word_set_cache = array_slice($word_set_cache, -400, 400, true);
+					}
+				}
+				$existing_set = $word_set_cache[$existing_fp];
 
-				if ($this->is_duplicateish($existing, $item, $mode)) {
+				if ($this->is_duplicateish_sets($existing_set, $item_set, $mode)) {
 					$kept[$i] = $this->choose_better($existing, $item);
 					$matched = true;
 					$this->increment_stat('removed_near_duplicate');
@@ -155,6 +176,30 @@ class PMM_Dedupe {
 	private function is_duplicateish($a, $b, $mode) {
 		$sim = PMM_Utils::jaccard_similarity($a, $b);
 		$subset = PMM_Utils::is_subset_duplicate($a, $b);
+
+		if ($mode === 'strict') {
+			return $sim >= 0.97;
+		}
+
+		if ($mode === 'aggressive') {
+			return $sim >= 0.72 || $subset;
+		}
+
+		return $sim >= 0.82 || $subset;
+	}
+
+	private function is_duplicateish_sets($setA, $setB, $mode) {
+		if (!$setA && !$setB) {
+			$sim = 1.0;
+			$subset = true;
+		} else {
+			$intersection = array_intersect_key($setA, $setB);
+			$union_count = count($setA + $setB);
+			$sim = $union_count > 0 ? count($intersection) / $union_count : 0.0;
+			$aInB = count($intersection) / max(count($setA), 1);
+			$bInA = count($intersection) / max(count($setB), 1);
+			$subset = ($aInB > 0.9 || $bInA > 0.9);
+		}
 
 		if ($mode === 'strict') {
 			return $sim >= 0.97;

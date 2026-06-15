@@ -25,8 +25,14 @@ require_once PMM_PLUGIN_DIR . 'includes/class-pmm-dedupe.php';
 require_once PMM_PLUGIN_DIR . 'includes/class-pmm-renderer.php';
 require_once PMM_PLUGIN_DIR . 'includes/class-pmm-admin.php';
 require_once PMM_PLUGIN_DIR . 'includes/class-pmm-plugin.php';
+require_once PMM_PLUGIN_DIR . 'includes/class-pmm-db.php';
+
+register_activation_hook(__FILE__, function () {
+	PMM_DB::ensure_schema();
+});
 
 function pmm_boot_plugin() {
+	PMM_DB::ensure_schema();
 	$plugin = new PMM_Plugin();
 	$plugin->init();
 }

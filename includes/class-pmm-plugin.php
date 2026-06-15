@@ -40,6 +40,7 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_stage_raw_import', [$this, 'stage_raw_import']);
 		add_action('admin_post_pmm_download_raw_import_rows', [$this, 'download_raw_import_rows']);
 		add_action('admin_post_pmm_clear_raw_import_preview', [$this, 'clear_raw_import_preview']);
+		add_action('admin_post_pmm_clear_entries_store', [$this, 'clear_entries_store']);
 		add_action('admin_post_pmm_save_entity_update', [$this, 'save_entity_update']);
 		add_action('admin_post_pmm_save_entity_bulk_update', [$this, 'save_entity_bulk_update']);
 		add_action('admin_post_pmm_prune_entity_entries', [$this, 'prune_entity_entries']);
@@ -48,6 +49,17 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_save_global_entity_report', [$this, 'save_global_entity_report']);
 		add_action('admin_post_pmm_global_search_replace', [$this, 'global_search_replace']);
 		add_action('admin_post_pmm_save_alias_rules', [$this, 'save_alias_rules']);
+		add_action('admin_post_pmm_save_global_entity_names', [$this, 'save_global_entity_names']);
+		add_action('admin_post_pmm_db_rebuild_from_latest_output', [$this, 'db_rebuild_from_latest_output']);
+		add_action('admin_post_pmm_db_rebuild_continue', [$this, 'db_rebuild_continue']);
+		add_action('admin_post_pmm_db_clear_tables', [$this, 'db_clear_tables']);
+		add_action('admin_post_pmm_db_rescan_unknown', [$this, 'db_rescan_unknown']);
+		add_action('admin_post_pmm_db_retag_unknown_entry', [$this, 'db_retag_unknown_entry']);
+		add_action('admin_post_pmm_db_update_unknown_entry_text', [$this, 'db_update_unknown_entry_text']);
+		add_action('admin_post_pmm_db_mark_unknown_entry_pruned', [$this, 'db_mark_unknown_entry_pruned']);
+		add_action('admin_post_pmm_db_unknown_entry_save', [$this, 'db_unknown_entry_save']);
+		add_action('admin_post_pmm_db_generate_dedupe_preview', [$this, 'db_generate_dedupe_preview']);
+		add_action('admin_post_pmm_db_apply_dedupe_review', [$this, 'db_apply_dedupe_review']);
 		add_action('admin_post_pmm_import_confirmed_entities', [$this, 'import_confirmed_entities']);
 		add_action('admin_post_pmm_save_confirmed_entities_section', [$this, 'save_confirmed_entities_section']);
 		add_action('admin_post_pmm_reprocess_last_output', [$this, 'reprocess_last_output']);
@@ -965,6 +977,315 @@ class PMM_Plugin {
 		exit;
 	}
 
+	public function save_global_entity_names() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_save_global_entity_names');
+
+		$text = isset($_POST['pmm_global_entity_names_text']) ? (string) wp_unslash($_POST['pmm_global_entity_names_text']) : '';
+		$names = $this->normalize_global_entity_names($text);
+		update_option('pmm_global_entity_names', $names, false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_global_entity_names_saved' => (string) count($names),
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_rebuild_from_latest_output() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_rebuild_from_latest_output');
+
+		$data = $this->get_last_output_data_for_editing();
+		$cleaned = $this->get_cleaned_data_from_last_output($data);
+		if (empty($cleaned) || !is_array($cleaned)) {
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_error' => 'entity_update_missing',
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$global_entity_names = $this->get_global_entity_names_option();
+		$job_key = 'pmm_db_rebuild_' . get_current_user_id();
+		$result  = PMM_DB::rebuild_start($cleaned, $global_entity_names, $job_key, 500);
+
+		if ($result['done']) {
+			$stats = PMM_DB::stats();
+			wp_safe_redirect(add_query_arg([
+				'page'          => 'perchance-memory-manager',
+				'pmm_db_rebuilt' => 1,
+				'pmm_db_entries' => (string) ((int) ($stats['total_entries'] ?? 0)),
+				'pmm_db_unknown' => (string) ((int) ($stats['unknown_entries'] ?? 0)),
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$percent = $result['total'] > 0 ? min(99, (int) round($result['offset'] / $result['total'] * 100)) : 0;
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_rebuilding'       => 1,
+			'pmm_db_rebuild_job'      => urlencode($job_key),
+			'pmm_db_rebuild_total'    => (string) $result['total'],
+			'pmm_db_rebuild_offset'   => (string) $result['offset'],
+			'pmm_db_rebuild_percent'  => (string) $percent,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_rebuild_continue() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_rebuild_continue');
+
+		$job_key = isset($_POST['pmm_db_rebuild_job']) ? sanitize_key((string) wp_unslash($_POST['pmm_db_rebuild_job'])) : '';
+		if ($job_key === '') {
+			wp_safe_redirect(add_query_arg(['page' => 'perchance-memory-manager'], admin_url('admin.php')));
+			exit;
+		}
+
+		$result = PMM_DB::rebuild_continue($job_key, 500);
+
+		if ($result['done']) {
+			$stats = PMM_DB::stats();
+			wp_safe_redirect(add_query_arg([
+				'page'           => 'perchance-memory-manager',
+				'pmm_db_rebuilt' => 1,
+				'pmm_db_entries' => (string) ((int) ($stats['total_entries'] ?? 0)),
+				'pmm_db_unknown' => (string) ((int) ($stats['unknown_entries'] ?? 0)),
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$percent = $result['total'] > 0 ? min(99, (int) round($result['offset'] / $result['total'] * 100)) : 0;
+
+		wp_safe_redirect(add_query_arg([
+			'page'                   => 'perchance-memory-manager',
+			'pmm_db_rebuilding'      => 1,
+			'pmm_db_rebuild_job'     => urlencode($job_key),
+			'pmm_db_rebuild_total'   => (string) $result['total'],
+			'pmm_db_rebuild_offset'  => (string) $result['offset'],
+			'pmm_db_rebuild_percent' => (string) $percent,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_clear_tables() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_clear_tables');
+		$preserve_entities = !empty($_POST['pmm_db_preserve_entities']);
+		PMM_DB::clear_db_tables($preserve_entities);
+		delete_transient('pmm_db_rebuild_' . get_current_user_id());
+
+		wp_safe_redirect(add_query_arg([
+			'page'              => 'perchance-memory-manager',
+			'pmm_db_tables_cleared' => 1,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_rescan_unknown() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_rescan_unknown');
+		$updated = PMM_DB::rescan_unknown_entries($this->get_global_entity_names_option());
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_rescanned' => (string) max(0, (int) $updated),
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_retag_unknown_entry() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_retag_unknown_entry');
+
+		$entry_id = isset($_POST['pmm_db_unknown_entry_id']) ? (int) wp_unslash((string) $_POST['pmm_db_unknown_entry_id']) : 0;
+		$existing = isset($_POST['pmm_db_retag_entities']) ? (array) wp_unslash($_POST['pmm_db_retag_entities']) : [];
+		$new_entity = isset($_POST['pmm_db_retag_new_entity']) ? trim((string) wp_unslash($_POST['pmm_db_retag_new_entity'])) : '';
+
+		$entity_names = [];
+		foreach ($existing as $name) {
+			$name = trim((string) $name);
+			if ($name !== '') {
+				$entity_names[] = $name;
+			}
+		}
+
+		if ($new_entity !== '') {
+			$entity_names[] = $new_entity;
+			$global_names = $this->get_global_entity_names_option();
+			$global_names[] = $new_entity;
+			update_option('pmm_global_entity_names', $this->normalize_global_entity_names($global_names), false);
+		}
+
+		$ok = PMM_DB::retag_unknown_entry($entry_id, $entity_names);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_retagged' => $ok ? 1 : 0,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_unknown_entry_save() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_unknown_entry_save');
+
+		$entry_id   = isset($_POST['pmm_db_unknown_entry_id'])   ? (int) wp_unslash((string) $_POST['pmm_db_unknown_entry_id'])   : 0;
+		$entry_text = isset($_POST['pmm_db_unknown_entry_text'])  ? trim((string) wp_unslash($_POST['pmm_db_unknown_entry_text']))  : '';
+		$row_action = isset($_POST['pmm_db_unknown_row_action'])  ? sanitize_key((string) wp_unslash($_POST['pmm_db_unknown_row_action'])) : 'save';
+		$existing   = isset($_POST['pmm_db_retag_entities'])      ? (array) wp_unslash($_POST['pmm_db_retag_entities'])             : [];
+		$new_entity = isset($_POST['pmm_db_retag_new_entity'])    ? trim((string) wp_unslash($_POST['pmm_db_retag_new_entity']))    : '';
+
+		if ($row_action === 'prune') {
+			$ok = PMM_DB::mark_unknown_entry_pruned($entry_id);
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_db_entry_pruned' => $ok ? 1 : 0,
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$redirect_args = ['page' => 'perchance-memory-manager'];
+
+		// 1. Update entry text if changed
+		if ($entry_text !== '') {
+			PMM_DB::update_unknown_entry_text($entry_id, $entry_text);
+			$redirect_args['pmm_db_entry_updated'] = 1;
+		}
+
+		// 2. Retag if entities supplied
+		$entity_names = [];
+		foreach ($existing as $name) {
+			$name = trim((string) $name);
+			if ($name !== '') {
+				$entity_names[] = $name;
+			}
+		}
+		if ($new_entity !== '') {
+			$entity_names[] = $new_entity;
+			$global_names   = $this->get_global_entity_names_option();
+			$global_names[] = $new_entity;
+			update_option('pmm_global_entity_names', $this->normalize_global_entity_names($global_names), false);
+		}
+		if (!empty($entity_names)) {
+			$ok = PMM_DB::retag_unknown_entry($entry_id, $entity_names);
+			$redirect_args['pmm_db_retagged'] = $ok ? 1 : 0;
+		}
+
+		wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_update_unknown_entry_text() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_update_unknown_entry_text');
+		$entry_id = isset($_POST['pmm_db_unknown_entry_id']) ? (int) wp_unslash((string) $_POST['pmm_db_unknown_entry_id']) : 0;
+		$entry_text = isset($_POST['pmm_db_unknown_entry_text']) ? (string) wp_unslash($_POST['pmm_db_unknown_entry_text']) : '';
+
+		$ok = PMM_DB::update_unknown_entry_text($entry_id, $entry_text);
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_entry_updated' => $ok ? 1 : 0,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_mark_unknown_entry_pruned() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_mark_unknown_entry_pruned');
+		$entry_id = isset($_POST['pmm_db_unknown_entry_id']) ? (int) wp_unslash((string) $_POST['pmm_db_unknown_entry_id']) : 0;
+		$ok = PMM_DB::mark_unknown_entry_pruned($entry_id);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_entry_pruned' => $ok ? 1 : 0,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_generate_dedupe_preview() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_generate_dedupe_preview');
+
+		$limit = isset($_POST['pmm_db_dedupe_limit']) ? max(25, min(1000, (int) wp_unslash((string) $_POST['pmm_db_dedupe_limit']))) : 300;
+		$near_threshold = isset($_POST['pmm_db_dedupe_threshold']) ? max(0.70, min(0.99, (float) wp_unslash((string) $_POST['pmm_db_dedupe_threshold']))) : 0.92;
+		$scope = isset($_POST['pmm_db_dedupe_scope']) ? sanitize_key((string) wp_unslash($_POST['pmm_db_dedupe_scope'])) : 'all';
+		if (!in_array($scope, ['all', 'unknown', 'known'], true)) {
+			$scope = 'all';
+		}
+
+		$candidates = PMM_DB::get_dedupe_candidates($limit, $near_threshold, $scope);
+		set_transient($this->db_dedupe_preview_key(), [
+			'limit' => $limit,
+			'threshold' => $near_threshold,
+			'scope' => $scope,
+			'candidates' => $candidates,
+			'saved_at' => time(),
+		], 30 * MINUTE_IN_SECONDS);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_dedupe_previewed' => (string) count($candidates),
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_apply_dedupe_review() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_apply_dedupe_review');
+		$json = isset($_POST['pmm_db_dedupe_rows']) ? (string) wp_unslash($_POST['pmm_db_dedupe_rows']) : '[]';
+		$rows = json_decode($json, true);
+		if (!is_array($rows)) {
+			$rows = [];
+		}
+
+		$reviewed = count($rows);
+		$applied = PMM_DB::apply_dedupe_actions($rows);
+		delete_transient($this->db_dedupe_preview_key());
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_dedupe_reviewed' => (string) $reviewed,
+			'pmm_db_dedupe_applied' => (string) $applied,
+		], admin_url('admin.php')));
+		exit;
+	}
+
 	public function apply_entity_review() {
 		if (!current_user_can('manage_options')) {
 			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
@@ -985,6 +1306,7 @@ class PMM_Plugin {
 
 		$applied = 0;
 		$reviewed = 0;
+		$entries_updated = 0;
 		$output_rule_changes = 0;
 		$expected_count = isset($_POST['pmm_entity_expected_count']) ? max(0, (int) wp_unslash((string) $_POST['pmm_entity_expected_count'])) : 0;
 		$dataset_stamp = isset($_POST['pmm_review_dataset_stamp']) ? max(0, (int) wp_unslash((string) $_POST['pmm_review_dataset_stamp'])) : 0;
@@ -993,6 +1315,9 @@ class PMM_Plugin {
 			$queue_filter = 'pending';
 		}
 		$queue = $this->get_entity_review_queue();
+		$data = $this->get_last_output_data_for_editing();
+		$cleaned = [];
+		$cleaned_changed = false;
 		foreach ($rows as $row_id => $row) {
 			if (!is_array($row)) {
 				continue;
@@ -1006,6 +1331,7 @@ class PMM_Plugin {
 			$action = isset($row['action']) ? sanitize_key((string) $row['action']) : 'keep';
 			$section = isset($row['section']) ? sanitize_text_field((string) $row['section']) : '';
 			$name = isset($row['name']) ? sanitize_text_field((string) $row['name']) : '';
+			$entries_text = isset($row['entries_text']) ? (string) $row['entries_text'] : '';
 
 			if ($section === '' || $name === '') {
 				continue;
@@ -1020,6 +1346,26 @@ class PMM_Plugin {
 			];
 
 			$key = $this->build_entity_rule_key($section, $name);
+
+			if ($action !== 'remove' && trim($entries_text) !== '' && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
+				if (empty($cleaned) || !is_array($cleaned)) {
+					$cleaned = $this->get_cleaned_data_from_last_output($data);
+				}
+				if (!empty($cleaned) && is_array($cleaned)) {
+					$before = isset($cleaned[$section][$name]) && is_array($cleaned[$section][$name]) ? (array) $cleaned[$section][$name] : [];
+					$cleaned = $this->apply_entity_edit_payload($cleaned, [
+						'section' => $section,
+						'entity' => $name,
+						'action' => 'replace',
+						'entries_text' => $entries_text,
+					]);
+					$after = isset($cleaned[$section][$name]) && is_array($cleaned[$section][$name]) ? (array) $cleaned[$section][$name] : [];
+					if ($before !== $after) {
+						$cleaned_changed = true;
+						++$entries_updated;
+					}
+				}
+			}
 
 			if ($action === 'hide') {
 				$had_removal = isset($removals[$key]);
@@ -1054,6 +1400,32 @@ class PMM_Plugin {
 		update_option('pmm_entity_review_hidden', $hidden, false);
 		update_option('pmm_entity_removal_rules', $removals, false);
 		$this->set_entity_review_queue($queue);
+
+		if ($cleaned_changed && !empty($data['content']) && isset($data['stats']) && is_array($data['stats'])) {
+			$renderer = new PMM_Renderer();
+			$format = isset($data['stats']['format']) ? (string) $data['stats']['format'] : 'txt';
+			$output = $renderer->render($cleaned, $format);
+
+			$data['content'] = $output;
+			$data['cleaned_data'] = $cleaned;
+			$data['stats']['sections'] = count($cleaned);
+			$data['stats']['entities'] = PMM_Utils::count_entities($cleaned);
+			$data['stats']['bullets'] = PMM_Utils::count_bullets($cleaned);
+			$data['entity_report'] = $this->build_entity_report_payload([
+				'cleaned' => $cleaned,
+				'entity_report' => ['new_entities' => []],
+			]);
+
+			$source_filename = isset($data['stats']['original_filename']) ? (string) $data['stats']['original_filename'] : 'memory.txt';
+			$version_meta = $this->persist_versioned_output($output, $source_filename, $format);
+			if (!empty($version_meta['filename'])) {
+				$data['stats']['version_filename'] = (string) $version_meta['filename'];
+				$data['stats']['version_saved_at'] = (int) $version_meta['saved_at'];
+			}
+
+			set_transient('pmm_last_output_' . get_current_user_id(), $data, 30 * MINUTE_IN_SECONDS);
+		}
+
 		if ($output_rule_changes > 0) {
 			$this->mark_output_rules_dirty();
 		}
@@ -1069,6 +1441,7 @@ class PMM_Plugin {
 			'page' => 'perchance-memory-manager',
 			'pmm_entity_queue_filter' => (string) $queue_filter,
 			'pmm_entity_saved' => (string) $applied,
+			'pmm_entity_entries_updated' => (string) $entries_updated,
 			'pmm_entity_reviewed' => (string) $reviewed,
 			'pmm_entity_truncated' => (string) (($expected_count > 0 && $reviewed > 0 && $reviewed < $expected_count) ? 1 : 0),
 			'pmm_entity_expected_count' => (string) $expected_count,
@@ -1732,6 +2105,40 @@ class PMM_Plugin {
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
 			'pmm_raw_cleared' => 1,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function clear_entries_store() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_clear_entries_store');
+
+		$user_id = get_current_user_id();
+		$delete_saved_version_files = !empty($_POST['pmm_clear_saved_version_files']);
+
+		delete_transient('pmm_last_output_' . $user_id);
+		delete_transient('pmm_prune_preview_' . $user_id);
+
+		update_option($this->similarity_review_queue_option_key(), [], false);
+		update_option($this->entity_review_queue_option_key(), [], false);
+		update_option($this->questionable_review_queue_option_key(), [], false);
+		update_option($this->reclassification_review_queue_option_key(), [], false);
+		update_option('pmm_similarity_review_log', [], false);
+
+		$this->delete_raw_import_preview_data();
+		$this->delete_staged_raw_import_rows();
+		$this->clear_saved_version_state($delete_saved_version_files);
+		$this->clear_all_job_state_files();
+
+		$this->clear_output_rules_dirty();
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_entries_cleared' => 1,
+			'pmm_versions_deleted' => $delete_saved_version_files ? 1 : 0,
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -4053,6 +4460,65 @@ class PMM_Plugin {
 		$key = $this->get_staged_raw_import_key();
 		delete_option($key);
 		delete_transient($key);
+	}
+
+	private function clear_saved_version_state($delete_saved_version_files = false) {
+		$history = get_option('pmm_version_history', []);
+		if (!is_array($history)) {
+			$history = [];
+		}
+
+		if ($delete_saved_version_files) {
+			$versions_dir = realpath(trailingslashit(PMM_PLUGIN_DIR) . 'versions');
+			foreach ($history as $item) {
+				if (!is_array($item)) {
+					continue;
+				}
+				$path = isset($item['path']) ? (string) $item['path'] : '';
+				if ($path === '') {
+					continue;
+				}
+				$real = realpath($path);
+				if ($real === false || $versions_dir === false) {
+					continue;
+				}
+				if (strpos($real, $versions_dir . DIRECTORY_SEPARATOR) !== 0) {
+					continue;
+				}
+				if (is_file($real)) {
+					@unlink($real);
+				}
+			}
+		}
+
+		delete_option('pmm_latest_version_file_path');
+		delete_option('pmm_latest_version_filename');
+		delete_option('pmm_latest_version_saved_at');
+		update_option('pmm_version_history', [], false);
+	}
+
+	private function clear_all_job_state_files() {
+		$uploads = wp_upload_dir();
+		$dir = trailingslashit($uploads['basedir']) . 'pmm-jobs';
+		if (!is_dir($dir)) {
+			return;
+		}
+
+		$it = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+			RecursiveIteratorIterator::CHILD_FIRST
+		);
+
+		foreach ($it as $item) {
+			$path = $item->getPathname();
+			if ($item->isFile()) {
+				@unlink($path);
+			} elseif ($item->isDir()) {
+				@rmdir($path);
+			}
+		}
+
+		@rmdir($dir);
 	}
 
 	private function get_staged_raw_import_rows() {
@@ -6679,6 +7145,11 @@ class PMM_Plugin {
 	}
 
 	private function collect_known_entity_names($cleaned) {
+		$global_names = $this->get_global_entity_names_option();
+		if (!empty($global_names)) {
+			return $global_names;
+		}
+
 		$names = [];
 		foreach ($this->entity_sections() as $section) {
 			if (empty($cleaned[$section]) || !is_array($cleaned[$section])) {
@@ -6696,6 +7167,46 @@ class PMM_Plugin {
 		}
 
 		return array_keys($names);
+	}
+
+	private function get_global_entity_names_option() {
+		$stored = get_option('pmm_global_entity_names', []);
+		return $this->normalize_global_entity_names($stored);
+	}
+
+	private function normalize_global_entity_names($value) {
+		$lines = [];
+		if (is_array($value)) {
+			$lines = $value;
+		} else {
+			$lines = preg_split('/\r\n|\r|\n/u', (string) $value);
+		}
+
+		$names = [];
+		foreach ((array) $lines as $line) {
+			$name = trim((string) $line);
+			$name = preg_replace('/^[\-*•]\s+/u', '', (string) $name);
+			$name = trim((string) $name);
+			if ($name === '') {
+				continue;
+			}
+
+			$fp = PMM_Utils::name_fingerprint($name);
+			if ($fp === '') {
+				continue;
+			}
+			if (!isset($names[$fp])) {
+				$names[$fp] = $name;
+			}
+		}
+
+		$out = array_values($names);
+		sort($out, SORT_NATURAL | SORT_FLAG_CASE);
+		return $out;
+	}
+
+	private function db_dedupe_preview_key() {
+		return 'pmm_db_dedupe_preview_' . get_current_user_id();
 	}
 
 	private function entry_references_any_known_entity($entry, $known_entities, $threshold) {
