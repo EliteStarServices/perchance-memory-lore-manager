@@ -658,6 +658,87 @@ class PMM_DB {
 		return true;
 	}
 
+	public static function mark_entries_pruned($entry_ids = []) {
+		self::ensure_schema();
+		global $wpdb;
+		$entries_table = self::entries_table();
+		$entry_entities_table = self::entry_entities_table();
+
+		$ids = [];
+		foreach ((array) $entry_ids as $entry_id) {
+			$entry_id = (int) $entry_id;
+			if ($entry_id > 0) {
+				$ids[] = $entry_id;
+			}
+		}
+		$ids = array_values(array_unique($ids));
+		if (empty($ids)) {
+			return 0;
+		}
+
+		$now = current_time('mysql');
+		$placeholders = implode(',', array_fill(0, count($ids), '%d'));
+		$params = array_merge([$now], $ids);
+
+		$updated = $wpdb->query($wpdb->prepare(
+			"UPDATE {$entries_table}
+			 SET status = 'pruned', updated_at = %s
+			 WHERE id IN ({$placeholders})
+			   AND status <> 'pruned'",
+			$params
+		));
+
+		$unknown_id = self::ensure_entity('Unknown');
+		if ($unknown_id > 0) {
+			$delete_params = array_merge($ids, [$unknown_id]);
+			$wpdb->query($wpdb->prepare(
+				"DELETE FROM {$entry_entities_table}
+				 WHERE entry_id IN ({$placeholders})
+				   AND entity_id = %d",
+				$delete_params
+			));
+		}
+
+		return $updated === false ? 0 : max(0, (int) $updated);
+	}
+
+	public static function update_entries_text_bulk($rows = []) {
+		self::ensure_schema();
+		global $wpdb;
+		$entries_table = self::entries_table();
+
+		$now = current_time('mysql');
+		$updated_count = 0;
+
+		foreach ((array) $rows as $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+			$entry_id = isset($row['id']) ? (int) $row['id'] : 0;
+			$entry_text = isset($row['text']) ? trim((string) $row['text']) : '';
+			if ($entry_id < 1 || $entry_text === '') {
+				continue;
+			}
+
+			$updated = $wpdb->query($wpdb->prepare(
+				"UPDATE {$entries_table}
+				 SET entry_text = %s, updated_at = %s
+				 WHERE id = %d
+				   AND status <> %s",
+				$entry_text,
+				$now,
+				$entry_id,
+				'pruned'
+			));
+
+			if ($updated !== false && (int) $updated > 0) {
+				$updated_count++;
+			}
+		}
+
+		return $updated_count;
+	}
+
 	public static function get_dedupe_candidates($limit = 300, $near_threshold = 0.92, $scope = 'all') {
 		self::ensure_schema();
 		global $wpdb;
