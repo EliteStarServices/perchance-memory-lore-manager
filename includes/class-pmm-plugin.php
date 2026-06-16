@@ -24,8 +24,6 @@ class PMM_Plugin {
 		add_action('admin_menu', [$this, 'register_admin']);
 		add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
 		add_action('admin_post_pmm_process_upload', [$this, 'handle_upload']);
-		add_action('admin_post_pmm_process_latest_version', [$this, 'process_latest_version']);
-		add_action('admin_post_pmm_process_recent_version', [$this, 'process_recent_version']);
 		add_action('admin_post_pmm_process_batch', [$this, 'process_batch']);
 		add_action('admin_post_pmm_apply_similarity_review', [$this, 'apply_similarity_review']);
 		add_action('admin_post_pmm_reset_similarity_review_queue', [$this, 'reset_similarity_review_queue']);
@@ -37,9 +35,11 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_reset_reclassification_review_queue', [$this, 'reset_reclassification_review_queue']);
 		add_action('admin_post_pmm_manage_hidden_entities', [$this, 'manage_hidden_entities']);
 		add_action('admin_post_pmm_preview_raw_import', [$this, 'preview_raw_import']);
+		add_action('admin_post_pmm_db_import_raw_text', [$this, 'db_import_raw_text']);
 		add_action('admin_post_pmm_stage_raw_import', [$this, 'stage_raw_import']);
 		add_action('admin_post_pmm_download_raw_import_rows', [$this, 'download_raw_import_rows']);
 		add_action('admin_post_pmm_clear_raw_import_preview', [$this, 'clear_raw_import_preview']);
+		add_action('admin_post_pmm_db_import_staged_raw', [$this, 'db_import_staged_raw']);
 		add_action('admin_post_pmm_clear_entries_store', [$this, 'clear_entries_store']);
 		add_action('admin_post_pmm_save_entity_update', [$this, 'save_entity_update']);
 		add_action('admin_post_pmm_save_entity_bulk_update', [$this, 'save_entity_bulk_update']);
@@ -50,8 +50,6 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_global_search_replace', [$this, 'global_search_replace']);
 		add_action('admin_post_pmm_save_alias_rules', [$this, 'save_alias_rules']);
 		add_action('admin_post_pmm_save_global_entity_names', [$this, 'save_global_entity_names']);
-		add_action('admin_post_pmm_db_rebuild_from_latest_output', [$this, 'db_rebuild_from_latest_output']);
-		add_action('admin_post_pmm_db_rebuild_continue', [$this, 'db_rebuild_continue']);
 		add_action('admin_post_pmm_db_clear_tables', [$this, 'db_clear_tables']);
 		add_action('admin_post_pmm_db_rescan_unknown', [$this, 'db_rescan_unknown']);
 		add_action('admin_post_pmm_db_retag_unknown_entry', [$this, 'db_retag_unknown_entry']);
@@ -64,11 +62,10 @@ class PMM_Plugin {
 		add_action('admin_post_pmm_db_apply_dedupe_review', [$this, 'db_apply_dedupe_review']);
 		add_action('admin_post_pmm_import_confirmed_entities', [$this, 'import_confirmed_entities']);
 		add_action('admin_post_pmm_save_confirmed_entities_section', [$this, 'save_confirmed_entities_section']);
-		add_action('admin_post_pmm_reprocess_last_output', [$this, 'reprocess_last_output']);
-		add_action('admin_post_pmm_download_last_output', [$this, 'download_last_output']);
 		add_action('admin_post_pmm_download_saved_version', [$this, 'download_saved_version']);
-		add_action('admin_post_pmm_save_preview_content', [$this, 'save_preview_content']);
+		add_action('admin_post_pmm_download_perchance_export', [$this, 'download_perchance_export']);
 		add_action('wp_ajax_pmm_get_entities_for_section', [$this, 'ajax_get_entities_for_section']);
+		add_action('wp_ajax_pmm_save_card_state', [$this, 'ajax_save_card_state']);
 	}
 
 	private function maybe_migrate_default_format_to_txt() {
@@ -114,6 +111,34 @@ class PMM_Plugin {
 			'entities' => $entities,
 			'allows_section_entries' => in_array($section, $this->section_level_sections(), true),
 		]);
+	}
+
+	public function ajax_save_card_state() {
+		if (!current_user_can('manage_options')) {
+			wp_send_json_error(['message' => 'forbidden'], 403);
+		}
+
+		check_ajax_referer('pmm_save_card_state', 'nonce');
+
+		$key = isset($_POST['key']) ? sanitize_text_field((string) wp_unslash($_POST['key'])) : '';
+		$state = isset($_POST['state']) ? sanitize_key((string) wp_unslash($_POST['state'])) : '';
+		if ($key === '' || !in_array($state, ['open', 'closed'], true)) {
+			wp_send_json_error(['message' => 'invalid_state'], 400);
+		}
+
+		$meta_key = 'pmm_card_states';
+		$states = get_user_meta(get_current_user_id(), $meta_key, true);
+		if (!is_array($states)) {
+			$states = [];
+		}
+
+		$states[$key] = $state;
+		if (count($states) > 1000) {
+			$states = array_slice($states, -1000, null, true);
+		}
+
+		update_user_meta(get_current_user_id(), $meta_key, $states);
+		wp_send_json_success(['saved' => 1]);
 	}
 
 	public function register_admin() {
@@ -509,6 +534,38 @@ class PMM_Plugin {
 		header('Content-Description: File Transfer');
 		header('Content-Type: text/plain; charset=' . get_option('blog_charset'));
 		header('Content-Disposition: attachment; filename="' . $filename . '"');
+		header('Content-Length: ' . strlen($content));
+
+		echo $content;
+		exit;
+	}
+
+	public function download_perchance_export() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_download_perchance_export');
+
+		$entries = PMM_DB::get_non_pruned_entries_chronological();
+		if (!is_array($entries)) {
+			$entries = [];
+		}
+		$content = implode("\n\n", $entries);
+		if (trim($content) === '') {
+			wp_safe_redirect(add_query_arg([
+				'page' => 'perchance-memory-manager',
+				'pmm_notice' => 'no_export_entries',
+			], admin_url('admin.php')));
+			exit;
+		}
+
+		$filename = 'perchance-export-' . gmdate('Y-m-d') . '.txt';
+
+		nocache_headers();
+		header('Content-Description: File Transfer');
+		header('Content-Type: text/plain; charset=' . get_option('blog_charset'));
+		header('Content-Disposition: attachment; filename="' . sanitize_file_name($filename) . '"');
 		header('Content-Length: ' . strlen($content));
 
 		echo $content;
@@ -1158,11 +1215,12 @@ class PMM_Plugin {
 		$entry_id   = isset($_POST['pmm_db_unknown_entry_id'])   ? (int) wp_unslash((string) $_POST['pmm_db_unknown_entry_id'])   : 0;
 		$entry_text = isset($_POST['pmm_db_unknown_entry_text'])  ? trim((string) wp_unslash($_POST['pmm_db_unknown_entry_text']))  : '';
 		$row_action = isset($_POST['pmm_db_unknown_row_action'])  ? sanitize_key((string) wp_unslash($_POST['pmm_db_unknown_row_action'])) : 'save';
+		$entity_csv = isset($_POST['pmm_db_entity_names']) ? (string) wp_unslash($_POST['pmm_db_entity_names']) : null;
 		$existing   = isset($_POST['pmm_db_retag_entities'])      ? (array) wp_unslash($_POST['pmm_db_retag_entities'])             : [];
 		$new_entity = isset($_POST['pmm_db_retag_new_entity'])    ? trim((string) wp_unslash($_POST['pmm_db_retag_new_entity']))    : '';
 
 		if ($row_action === 'prune') {
-			$ok = PMM_DB::mark_unknown_entry_pruned($entry_id);
+			$ok = (int) PMM_DB::mark_entries_pruned([$entry_id]) > 0;
 			wp_safe_redirect(add_query_arg([
 				'page' => 'perchance-memory-manager',
 				'pmm_db_entry_pruned' => $ok ? 1 : 0,
@@ -1174,27 +1232,53 @@ class PMM_Plugin {
 
 		// 1. Update entry text if changed
 		if ($entry_text !== '') {
-			PMM_DB::update_unknown_entry_text($entry_id, $entry_text);
+			PMM_DB::update_entries_text_bulk([
+				[
+					'id' => $entry_id,
+					'text' => $entry_text,
+				],
+			]);
 			$redirect_args['pmm_db_entry_updated'] = 1;
 		}
 
 		// 2. Retag if entities supplied
 		$entity_names = [];
-		foreach ($existing as $name) {
-			$name = trim((string) $name);
-			if ($name !== '') {
-				$entity_names[] = $name;
+		if ($entity_csv !== null) {
+			$parts = preg_split('/\s*,\s*/', trim((string) $entity_csv));
+			if (is_array($parts)) {
+				foreach ($parts as $part) {
+					$name = trim((string) $part);
+					if ($name !== '') {
+						$entity_names[] = $name;
+					}
+				}
 			}
-		}
-		if ($new_entity !== '') {
-			$entity_names[] = $new_entity;
-			$global_names   = $this->get_global_entity_names_option();
-			$global_names[] = $new_entity;
-			update_option('pmm_global_entity_names', $this->normalize_global_entity_names($global_names), false);
-		}
-		if (!empty($entity_names)) {
-			$ok = PMM_DB::retag_unknown_entry($entry_id, $entity_names);
+			$entity_names = array_values(array_unique($entity_names));
+			$ok = PMM_DB::retag_entry_entities($entry_id, $entity_names);
 			$redirect_args['pmm_db_retagged'] = $ok ? 1 : 0;
+
+			if (!empty($entity_names)) {
+				$global_names = $this->get_global_entity_names_option();
+				$global_names = array_merge($global_names, $entity_names);
+				update_option('pmm_global_entity_names', $this->normalize_global_entity_names($global_names), false);
+			}
+		} else {
+			foreach ($existing as $name) {
+				$name = trim((string) $name);
+				if ($name !== '') {
+					$entity_names[] = $name;
+				}
+			}
+			if ($new_entity !== '') {
+				$entity_names[] = $new_entity;
+				$global_names   = $this->get_global_entity_names_option();
+				$global_names[] = $new_entity;
+				update_option('pmm_global_entity_names', $this->normalize_global_entity_names($global_names), false);
+			}
+			if (!empty($entity_names)) {
+				$ok = PMM_DB::retag_entry_entities($entry_id, $entity_names);
+				$redirect_args['pmm_db_retagged'] = $ok ? 1 : 0;
+			}
 		}
 
 		wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
@@ -1311,6 +1395,30 @@ class PMM_Plugin {
 			}
 
 			$entity_names = [];
+			$has_entity_csv = array_key_exists('entity_names', $row);
+			if ($has_entity_csv) {
+				$csv = trim((string) ($row['entity_names'] ?? ''));
+				if ($csv !== '') {
+					$parts = preg_split('/\s*,\s*/', $csv);
+					if (is_array($parts)) {
+						foreach ($parts as $part) {
+							$name = trim((string) $part);
+							if ($name !== '') {
+								$entity_names[] = $name;
+							}
+						}
+					}
+				}
+				$entity_names = array_values(array_unique($entity_names));
+				if (PMM_DB::retag_entry_entities($entry_id, $entity_names)) {
+					$retagged++;
+				}
+				if (!empty($entity_names)) {
+					$global_names = array_merge($global_names, $entity_names);
+				}
+				continue;
+			}
+
 			$existing = isset($row['entities']) && is_array($row['entities']) ? $row['entities'] : [];
 			foreach ($existing as $name) {
 				$name = trim((string) $name);
@@ -1326,11 +1434,7 @@ class PMM_Plugin {
 			}
 
 			$entity_names = array_values(array_unique($entity_names));
-			if (empty($entity_names)) {
-				continue;
-			}
-
-			if (PMM_DB::retag_unknown_entry($entry_id, $entity_names)) {
+			if (!empty($entity_names) && PMM_DB::retag_entry_entities($entry_id, $entity_names)) {
 				$retagged++;
 			}
 		}
@@ -2078,6 +2182,36 @@ class PMM_Plugin {
 		exit;
 	}
 
+	public function db_import_raw_text() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_import_raw_text');
+
+		$text = isset($_POST['pmm_raw_import_text']) ? (string) wp_unslash($_POST['pmm_raw_import_text']) : '';
+		$file_text = $this->read_uploaded_text_file('pmm_raw_import_file', 12 * 1024 * 1024);
+		if ($file_text !== '') {
+			$text = trim($text . "\n" . $file_text);
+		}
+		$text = trim($text);
+
+		$parser = new PMM_Parser();
+		$rows = $parser->preview_raw_import_rows($text, $this->build_existing_entity_seed_from_last_output());
+		$result = PMM_DB::import_staged_rows($rows, $this->get_global_entity_names_option(), false);
+
+		$this->delete_raw_import_preview_data();
+		$this->delete_staged_raw_import_rows();
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_raw_imported' => (string) ((int) ($result['imported'] ?? 0)),
+			'pmm_db_entries' => (string) ((int) ($result['total_entries'] ?? 0)),
+			'pmm_db_unknown' => (string) ((int) ($result['unknown_entries'] ?? 0)),
+		], admin_url('admin.php')));
+		exit;
+	}
+
 	public function stage_raw_import() {
 		if (!current_user_can('manage_options')) {
 			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
@@ -2240,6 +2374,33 @@ class PMM_Plugin {
 		wp_safe_redirect(add_query_arg([
 			'page' => 'perchance-memory-manager',
 			'pmm_raw_cleared' => 1,
+		], admin_url('admin.php')));
+		exit;
+	}
+
+	public function db_import_staged_raw() {
+		if (!current_user_can('manage_options')) {
+			wp_die(esc_html__('You do not have permission to do that.', 'perchance-memory-manager'));
+		}
+
+		check_admin_referer('pmm_db_import_staged_raw');
+
+		$rows = $this->get_staged_raw_import_rows();
+		if (empty($rows)) {
+			$preview = $this->get_raw_import_preview_data();
+			$preview_rows = isset($preview['rows']) && is_array($preview['rows']) ? $preview['rows'] : [];
+			if (!empty($preview_rows)) {
+				$rows = $this->filter_preview_rows_by_confidence($preview_rows, 'all_preview_rows', 1);
+			}
+		}
+
+		$result = PMM_DB::import_staged_rows($rows, $this->get_global_entity_names_option(), false);
+
+		wp_safe_redirect(add_query_arg([
+			'page' => 'perchance-memory-manager',
+			'pmm_db_raw_imported' => (string) ((int) ($result['imported'] ?? 0)),
+			'pmm_db_entries' => (string) ((int) ($result['total_entries'] ?? 0)),
+			'pmm_db_unknown' => (string) ((int) ($result['unknown_entries'] ?? 0)),
 		], admin_url('admin.php')));
 		exit;
 	}
@@ -4919,18 +5080,16 @@ class PMM_Plugin {
 
 	private function build_existing_entity_seed_from_last_output() {
 		$data = $this->empty_data_template();
-		$last = get_transient('pmm_last_output_' . get_current_user_id());
-		$groups = isset($last['entity_report']['entities']) && is_array($last['entity_report']['entities']) ? $last['entity_report']['entities'] : [];
 
-		foreach ((array) $groups as $section => $names) {
-			if (!isset($data[$section]) || !is_array($names)) {
+		// DB-first seed: include known DB entity names as candidates instead of relying on last output transient data.
+		$db_entity_names = PMM_DB::get_all_entity_names();
+		foreach ((array) $db_entity_names as $name) {
+			$name = trim((string) $name);
+			if ($name === '') {
 				continue;
 			}
-			foreach ($names as $name) {
-				$name = trim((string) $name);
-				if ($name !== '') {
-					$data[$section][$name] = [];
-				}
+			foreach ($this->entity_sections() as $section) {
+				$data[$section][$name] = [];
 			}
 		}
 

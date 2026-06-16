@@ -91,6 +91,7 @@ class PMM_Admin {
 		$db_rebuilt = isset($_GET['pmm_db_rebuilt']) ? (int) $_GET['pmm_db_rebuilt'] : 0;
 		$db_entries = isset($_GET['pmm_db_entries']) ? (int) $_GET['pmm_db_entries'] : 0;
 		$db_unknown = isset($_GET['pmm_db_unknown']) ? (int) $_GET['pmm_db_unknown'] : 0;
+		$db_raw_imported = isset($_GET['pmm_db_raw_imported']) ? (int) $_GET['pmm_db_raw_imported'] : -1;
 		$db_rescanned = isset($_GET['pmm_db_rescanned']) ? (int) $_GET['pmm_db_rescanned'] : -1;
 		$db_retagged = isset($_GET['pmm_db_retagged']) ? (int) $_GET['pmm_db_retagged'] : -1;
 		$db_rebuilding       = isset($_GET['pmm_db_rebuilding'])      ? (int) $_GET['pmm_db_rebuilding']      : 0;
@@ -662,7 +663,7 @@ class PMM_Admin {
 			<h1><?php esc_html_e('Perchance', 'perchance-memory-manager'); ?></h1>
 
 			<div class="notice notice-info">
-				<p><?php esc_html_e('Upload a Perchance Chat lore or memory file, even character or world information (.txt or .md), to clean, reorganize and manage.', 'perchance-memory-manager'); ?></p>
+				<p><?php esc_html_e('Upload a Perchance Chat lore or memory file in .txt format, one entry per line, entries separated by a blank line.', 'perchance-memory-manager'); ?></p>
 			</div>
 
 			<?php if ($latest_version_public_url !== '') : ?>
@@ -717,7 +718,7 @@ class PMM_Admin {
 				<div class="notice notice-warning"><p><?php echo esc_html(sprintf(__('Only %1$d of %2$d questionable rows were received when saving. This usually means PHP input limits truncated the form submission (for example, max_input_vars).', 'perchance-memory-manager'), max(0, $questionable_reviewed), $questionable_expected_count)); ?></p></div>
 			<?php endif; ?>
 
-			<?php if ($rules_dirty && $has_last_output) : ?>
+			<?php if (false && $rules_dirty && $has_last_output) : ?>
 				<div class="notice notice-warning">
 					<p>
 						<strong><?php esc_html_e('Reprocess recommended:', 'perchance-memory-manager'); ?></strong>
@@ -824,6 +825,10 @@ class PMM_Admin {
 				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('DB rebuilt from latest output: %1$d entries loaded, %2$d currently unknown.', 'perchance-memory-manager'), max(0, $db_entries), max(0, $db_unknown))); ?></p></div>
 			<?php endif; ?>
 
+			<?php if ($db_raw_imported >= 0) : ?>
+				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Imported %1$d raw row(s) into DB. DB now has %2$d entries (%3$d unknown).', 'perchance-memory-manager'), max(0, $db_raw_imported), max(0, $db_entries), max(0, $db_unknown))); ?></p></div>
+			<?php endif; ?>
+
 			<?php if ($db_rebuilding && $db_rebuild_job !== '') : ?>
 				<div class="notice notice-info" id="pmm-db-rebuild-notice">
 					<p><strong><?php esc_html_e('DB rebuild in progress…', 'perchance-memory-manager'); ?></strong>
@@ -861,7 +866,7 @@ class PMM_Admin {
 			<?php endif; ?>
 
 			<?php if ($db_entry_pruned >= 0) : ?>
-				<div class="notice notice-success"><p><?php echo esc_html($db_entry_pruned ? __('Unknown entry was marked as removed (pruned).', 'perchance-memory-manager') : __('Could not mark unknown entry as removed.', 'perchance-memory-manager')); ?></p></div>
+				<div class="notice notice-success"><p><?php echo esc_html($db_entry_pruned ? __('Entry was marked as removed (pruned).', 'perchance-memory-manager') : __('Could not mark entry as removed.', 'perchance-memory-manager')); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ($db_bulk_pruned >= 0) : ?>
@@ -1263,17 +1268,17 @@ class PMM_Admin {
 					<summary><strong><?php esc_html_e('Raw Import Workspace', 'perchance-memory-manager'); ?></strong></summary>
 				<div>
 				<p><strong><?php esc_html_e('Raw Import Tip:', 'perchance-memory-manager'); ?></strong> <?php esc_html_e('When importing raw text, add a section header "# Raw Import" (or "# New Entries") in your source file. Raw import understands bullet-delimited entries and blank-line-delimited wrapped entries, which matches common Perchance memory formats.', 'perchance-memory-manager'); ?>
-				<br><?php esc_html_e('Paste raw import text or upload a raw text file to preview bullet-delimited and blank-line-delimited entry parsing. Wrapped lines are kept with their entry until a blank line or next bullet starts a new one. Then edit tab-separated staging rows (or upload the edited TSV) before the next upload/reprocess.', 'perchance-memory-manager'); ?></p>
+				<br><?php esc_html_e('Paste raw import text or upload a raw text file to parse and import directly into the Database Workflow. Review and edit imported rows in DB Entry Browser.', 'perchance-memory-manager'); ?></p>
 			    </div>
 				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
-					<?php wp_nonce_field('pmm_preview_raw_import'); ?>
-					<input type="hidden" name="action" value="pmm_preview_raw_import">
+					<?php wp_nonce_field('pmm_db_import_raw_text'); ?>
+					<input type="hidden" name="action" value="pmm_db_import_raw_text">
 					<p><input type="file" name="pmm_raw_import_file" accept=".txt,.md,.log,.tsv"></p>
 					<textarea name="pmm_raw_import_text" rows="12" class="large-text code" placeholder="# Raw Import&#10;Character is a former pilot with a fractured memory...&#10;Another line from a one-entry-per-line dump"><?php echo esc_textarea($raw_preview_text); ?></textarea>
-					<?php submit_button(__('Preview Raw Import', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+					<?php submit_button(__('Import Raw Text to DB', 'perchance-memory-manager'), 'primary', 'submit', false); ?>
 				</form>
 
-				<?php if (!empty($raw_preview_rows) || !empty($staged_raw_rows)) : ?>
+				<?php if (false && (!empty($raw_preview_rows) || !empty($staged_raw_rows))) : ?>
 					<?php if (!empty($raw_preview_rows)) : ?>
 						<p class="description" style="margin-top:10px;">
 							<?php echo esc_html(sprintf(__('Preview confidence mix: %1$d high (>=85), %2$d medium (60-84), %3$d low (<60). Use confidence staging to avoid reviewing every row manually.', 'perchance-memory-manager'), $raw_preview_high_conf, $raw_preview_medium_conf, $raw_preview_low_conf)); ?>
@@ -1354,6 +1359,11 @@ class PMM_Admin {
 							<textarea name="pmm_raw_import_rows" rows="14" class="large-text code"><?php echo esc_textarea($staged_raw_rows_text); ?></textarea>
 						</details>
 						<?php submit_button(__('Stage Rows For Next Processing Run', 'perchance-memory-manager'), 'secondary', 'submit', false, ['id' => 'pmm-raw-stage-submit']); ?>
+					</form>
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:8px;">
+						<?php wp_nonce_field('pmm_db_import_staged_raw'); ?>
+						<input type="hidden" name="action" value="pmm_db_import_staged_raw">
+						<?php submit_button(__('Import Staged Raw Rows to DB', 'perchance-memory-manager'), 'primary', 'submit', false); ?>
 					</form>
 					<script>
 						document.addEventListener('DOMContentLoaded', function () {
@@ -1600,7 +1610,7 @@ class PMM_Admin {
 
 			<?php if ((int) ($db_stats['total_entries'] ?? 0) > 0) : ?>
 				<div class="pmm-card">
-					<details class="pmm-collapsible-section pmm-collapsible-root" <?php if ($db_browse_total > 0 || $db_browse_search !== '' || $db_browse_entity !== '') echo 'open'; ?>>
+					<details class="pmm-collapsible-section pmm-collapsible-root">
 						<summary><strong><?php echo esc_html(sprintf(__('DB Entry Browser (%d entries)', 'perchance-memory-manager'), (int) ($db_stats['total_entries'] ?? 0))); ?></strong></summary>
 						<p class="description"><?php esc_html_e('Browse and search all entries in the DB. Filter by status, entity, or search text.', 'perchance-memory-manager'); ?></p>
 						<form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" style="margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;">
@@ -1672,6 +1682,7 @@ class PMM_Admin {
 												<input type="hidden" name="action" value="pmm_db_unknown_entry_save">
 												<input type="hidden" name="pmm_db_unknown_entry_id" value="<?php echo esc_attr((string) $br_id); ?>">
 												<textarea name="pmm_db_unknown_entry_text" data-entry-id="<?php echo esc_attr((string) $br_id); ?>" rows="3" class="large-text code pmm-db-browser-entry-text" style="width:100%;box-sizing:border-box;margin-bottom:4px;"><?php echo esc_textarea((string) ($br['entry_text'] ?? '')); ?></textarea>
+												<input type="text" name="pmm_db_entity_names" data-entry-id="<?php echo esc_attr((string) $br_id); ?>" class="regular-text pmm-db-browser-entity-text" style="width:100%;box-sizing:border-box;margin-bottom:4px;" value="<?php echo esc_attr((string) ($br['entity_names'] ?? '')); ?>" placeholder="<?php esc_attr_e('Entity names (comma-separated)', 'perchance-memory-manager'); ?>">
 												<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
 													<input type="hidden" name="pmm_db_unknown_row_action" id="pmm_br_action_<?php echo esc_attr((string) $br_id); ?>" value="save">
 													<?php submit_button(__('Save', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin:0;']); ?>
@@ -1733,10 +1744,11 @@ class PMM_Admin {
 									for (var i = 0; i < selected.length; i++) {
 										var entryId = selected[i];
 										var area = document.querySelector('.pmm-db-browser-entry-text[data-entry-id="' + entryId + '"]');
+											var entityInput = document.querySelector('.pmm-db-browser-entity-text[data-entry-id="' + entryId + '"]');
 										if (!area) {
 											continue;
 										}
-										payload.push({ id: parseInt(entryId, 10), text: area.value || '' });
+											payload.push({ id: parseInt(entryId, 10), text: area.value || '', entity_names: entityInput ? (entityInput.value || '') : '' });
 									}
 									updateRowsInput.value = JSON.stringify(payload);
 								};
@@ -2735,8 +2747,8 @@ class PMM_Admin {
 			</div>
 
 			<div class="pmm-card">
-				<details class="pmm-collapsible-section" open>
-					<summary><strong><?php esc_html_e('Perchance Paste Export (Chronological)', 'perchance-memory-manager'); ?></strong></summary>
+				<details class="pmm-collapsible-section">
+					<summary><strong><?php echo esc_html(sprintf(__('Perchance Paste Export (Chronological) (%d entries)', 'perchance-memory-manager'), (int) count($db_perchance_export_entries))); ?></strong></summary>
 					<p class="description"><?php esc_html_e('All DB entries in chronological order, excluding pruned/removed rows. Format is plain text only: one entry, then one blank line, then the next entry.', 'perchance-memory-manager'); ?></p>
 					<p style="margin:8px 0;">
 						<button type="button" class="button button-secondary" id="pmm_copy_perchance_export"><?php esc_html_e('Copy to Clipboard', 'perchance-memory-manager'); ?></button>
@@ -2799,14 +2811,6 @@ class PMM_Admin {
 						<?php submit_button(__('1) Rebuild DB from Latest Output', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
 					</form>
 
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 8px 8px;display:inline-block;vertical-align:top;" onsubmit="return confirm('<?php echo esc_js(__('Clear all DB tables? This cannot be undone.', 'perchance-memory-manager')); ?>');">
-						<?php wp_nonce_field('pmm_db_clear_tables'); ?>
-						<input type="hidden" name="action" value="pmm_db_clear_tables">
-						<label style="display:block;margin-bottom:4px;"><input type="checkbox" name="pmm_db_preserve_entities" value="1"> <?php esc_html_e('Keep entity name list', 'perchance-memory-manager'); ?></label>
-						<?php submit_button(__('Clear DB Tables', 'perchance-memory-manager'), 'delete', 'submit', false); ?>
-					</form>
-
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 8px;display:inline-block;">
 						<?php wp_nonce_field('pmm_db_rescan_unknown'); ?>
 						<input type="hidden" name="action" value="pmm_db_rescan_unknown">
 						<?php submit_button(__('2) Re-scan Unknown Against Entity List', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
@@ -3059,6 +3063,43 @@ class PMM_Admin {
 
 			<div class="pmm-card">
 				<details class="pmm-collapsible-section">
+					<summary><strong><?php esc_html_e('⚠️ Clear Database Entries', 'perchance-memory-manager'); ?></strong></summary>
+					<p class="description"><?php esc_html_e('Permanently delete all entries from the database. You can optionally keep entity names for re-tagging. Download a backup export before clearing.', 'perchance-memory-manager'); ?></p>
+					<div style="padding:8px;background-color:#fef5f5;border:1px solid #b32d2e;border-radius:4px;margin-bottom:12px;">
+						<p style="margin-top:0;"><strong style="color:#b32d2e;"><?php esc_html_e('Warning: This action cannot be undone.', 'perchance-memory-manager'); ?></strong></p>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:8px;display:block;">
+							<?php wp_nonce_field('pmm_download_perchance_export'); ?>
+							<input type="hidden" name="action" value="pmm_download_perchance_export">
+							<?php submit_button(__('Download Export First', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+						</form>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="pmm-db-clear-form" onsubmit="return false;">
+							<?php wp_nonce_field('pmm_db_clear_tables'); ?>
+							<input type="hidden" name="action" value="pmm_db_clear_tables">
+							<label style="display:block;margin-bottom:8px;"><input type="checkbox" name="pmm_db_preserve_entities" value="1" checked> <?php esc_html_e('Keep entity name list', 'perchance-memory-manager'); ?></label>
+							<?php submit_button(__('Clear All Entries', 'perchance-memory-manager'), 'delete', 'submit', false); ?>
+						</form>
+					</div>
+					<script>
+						document.addEventListener('DOMContentLoaded', function () {
+							var form = document.getElementById('pmm-db-clear-form');
+							var clearBtn = form ? form.querySelector('button[type="submit"]') : null;
+							if (!form || !clearBtn) {
+								return;
+							}
+							clearBtn.addEventListener('click', function (e) {
+								e.preventDefault();
+								var msg = <?php echo wp_json_encode(__('Are you sure you want to clear all database entries?\n\nThis cannot be undone. If you want to preserve your data, click "Cancel" and download an export first.', 'perchance-memory-manager')); ?>;
+								if (window.confirm(msg)) {
+									form.submit();
+								}
+							});
+						});
+					</script>
+				</details>
+			</div>
+
+			<div class="pmm-card">
+				<details class="pmm-collapsible-section">
 					<summary><strong><?php esc_html_e('Known Sections and Confirmed Entities', 'perchance-memory-manager'); ?></strong></summary>
 					<p><?php esc_html_e('This registry is built from processed output over time and is reused as a seed during raw import suggestions.', 'perchance-memory-manager'); ?></p>
 					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 12px 0;">
@@ -3122,7 +3163,7 @@ class PMM_Admin {
 
 
 
-			<?php if ($has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
+			<?php if (false && $has_last_output && !empty($data['entity_report']) && is_array($data['entity_report'])) : ?>
 				<div class="pmm-card">
 					<details class="pmm-collapsible-section pmm-collapsible-root">
 						<summary><strong><?php esc_html_e('Similar Entity Review', 'perchance-memory-manager'); ?></strong></summary>
@@ -3170,7 +3211,7 @@ class PMM_Admin {
 				</div>
 			<?php endif; ?>
 
-			<?php if ($has_last_output || !empty($similarity_log)) : ?>
+			<?php if (false && ($has_last_output || !empty($similarity_log))) : ?>
 				<div class="pmm-card">
 					<details class="pmm-collapsible-section pmm-collapsible-root">
 						<summary><strong><?php esc_html_e('Review and Results Hub', 'perchance-memory-manager'); ?></strong></summary>
@@ -3220,7 +3261,7 @@ class PMM_Admin {
 				</div>
 			<?php endif; ?>
 
-			<?php if ($has_last_output) : ?>
+			<?php if (false && $has_last_output) : ?>
 				<div class="pmm-card">
 					<h2><?php esc_html_e('Editable Output Workspace', 'perchance-memory-manager'); ?></h2>
 					<p class="description"><?php esc_html_e('Edit this output directly, then save it as the latest version. Use quick find to navigate large text by free text, section, or entity.', 'perchance-memory-manager'); ?></p>
@@ -3654,63 +3695,6 @@ class PMM_Admin {
 
 					<script>
 						document.addEventListener('DOMContentLoaded', function () {
-							var storageKeyPrefix = 'pmm-collapsible-state:' + window.location.pathname + ':';
-							var collapsibles = document.querySelectorAll('.pmm-wrap details.pmm-collapsible-section');
-
-							function normalizeLabel(value) {
-								return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-							}
-
-							function directSummaryText(detail) {
-								var summary = detail.querySelector(':scope > summary');
-								if (!summary) {
-									return '';
-								}
-								return normalizeLabel(summary.textContent);
-							}
-
-							function buildCollapsePath(detail) {
-								var parts = [];
-								var current = detail;
-
-								while (current && current.matches && current.matches('details.pmm-collapsible-section')) {
-									parts.unshift(directSummaryText(current));
-									current = current.parentElement ? current.parentElement.closest('details.pmm-collapsible-section') : null;
-								}
-
-								return parts.filter(function (part) { return part !== ''; }).join(' > ');
-							}
-
-							collapsibles.forEach(function (detail) {
-								var path = buildCollapsePath(detail);
-								if (!path) {
-									return;
-								}
-
-								var storageKey = storageKeyPrefix + path;
-								try {
-									var stored = window.localStorage.getItem(storageKey);
-									if (stored === 'open') {
-										detail.open = true;
-									} else if (stored === 'closed') {
-										detail.open = false;
-									}
-								} catch (error) {
-									return;
-								}
-
-								detail.addEventListener('toggle', function () {
-									try {
-										window.localStorage.setItem(storageKey, detail.open ? 'open' : 'closed');
-									} catch (error) {
-									}
-								});
-							});
-						});
-					</script>
-
-					<script>
-						document.addEventListener('DOMContentLoaded', function () {
 							var forms = document.querySelectorAll('form.pmm-review-form[id]');
 							if (!forms.length) {
 								return;
@@ -3842,6 +3826,110 @@ class PMM_Admin {
 
 				</div>
 			<?php endif; ?>
+
+			<script>
+				document.addEventListener('DOMContentLoaded', function () {
+					var searchParams = new URLSearchParams(window.location.search || '');
+					var adminPage = searchParams.get('page') || '';
+					var storageKeyPrefix = 'pmm-collapsible-state:v2:' + window.location.pathname + ':page=' + adminPage + ':';
+					var serverStates = <?php
+						$pmm_card_states = get_user_meta(get_current_user_id(), 'pmm_card_states', true);
+						if (!is_array($pmm_card_states)) {
+							$pmm_card_states = [];
+						}
+						echo wp_json_encode($pmm_card_states);
+					?>;
+					var cardStateNonce = '<?php echo esc_js(wp_create_nonce('pmm_save_card_state')); ?>';
+					var collapsibles = document.querySelectorAll('.pmm-wrap details.pmm-collapsible-section');
+
+					function buildStorageKey(index) {
+						return storageKeyPrefix + 'idx:' + String(index);
+					}
+
+					function readStoredState(storageKey) {
+						if (!storageKey) {
+							return '';
+						}
+
+						var value = '';
+						try {
+							value = window.localStorage.getItem(storageKey) || '';
+						} catch (error) {
+							value = '';
+						}
+						if (!value && serverStates && typeof serverStates === 'object') {
+							value = String(serverStates[storageKey] || '');
+						}
+
+						return value;
+					}
+
+					function writeStoredState(storageKey, state) {
+						if (!storageKey) {
+							return;
+						}
+						try {
+							window.localStorage.setItem(storageKey, state);
+						} catch (error) {
+						}
+						if (serverStates && typeof serverStates === 'object') {
+							serverStates[storageKey] = state;
+						}
+
+						if (typeof ajaxurl !== 'undefined' && cardStateNonce !== '') {
+							if (typeof window.jQuery !== 'undefined' && window.jQuery.post) {
+								window.jQuery.post(ajaxurl, {
+									action: 'pmm_save_card_state',
+									nonce: cardStateNonce,
+									key: storageKey,
+									state: state
+								});
+							} else if (typeof fetch === 'function') {
+								var body = new URLSearchParams();
+								body.set('action', 'pmm_save_card_state');
+								body.set('nonce', cardStateNonce);
+								body.set('key', storageKey);
+								body.set('state', state);
+								fetch(ajaxurl, {
+									method: 'POST',
+									credentials: 'same-origin',
+									headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+									body: body.toString()
+								}).catch(function () {});
+							}
+						}
+					}
+
+					collapsibles.forEach(function (detail, index) {
+						var storageKey = buildStorageKey(index);
+						if (!storageKey) {
+							return;
+						}
+
+						detail.dataset.pmmStorageKey = storageKey;
+						var stored = readStoredState(storageKey);
+						if (stored === 'open') {
+							detail.open = true;
+						} else if (stored === 'closed') {
+							detail.open = false;
+						}
+
+						detail.addEventListener('toggle', function () {
+							writeStoredState(storageKey, detail.open ? 'open' : 'closed');
+						});
+					});
+
+					window.addEventListener('beforeunload', function () {
+						collapsibles.forEach(function (detail) {
+							var storageKey = detail.dataset.pmmStorageKey || '';
+							if (!storageKey) {
+								return;
+							}
+							writeStoredState(storageKey, detail.open ? 'open' : 'closed');
+						});
+					});
+				});
+			</script>
 
 		</div>
 		<?php

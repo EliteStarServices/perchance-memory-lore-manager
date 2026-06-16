@@ -312,6 +312,146 @@ class PMM_DB {
 		return self::stats();
 	}
 
+	public static function import_staged_rows($rows, $global_entity_names = [], $replace_existing = false) {
+		self::ensure_schema();
+		global $wpdb;
+
+		$entries_table = self::entries_table();
+		$entry_entities_table = self::entry_entities_table();
+
+		$normalized_rows = [];
+		foreach ((array) $rows as $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$section = isset($row['section']) ? trim((string) $row['section']) : 'Notes';
+			$entity = isset($row['entity']) ? trim((string) $row['entity']) : '';
+			$text = '';
+			if (isset($row['bullet'])) {
+				$text = trim((string) $row['bullet']);
+			} elseif (isset($row['entry'])) {
+				$text = trim((string) $row['entry']);
+			} elseif (isset($row['text'])) {
+				$text = trim((string) $row['text']);
+			}
+
+			if ($text === '') {
+				continue;
+			}
+
+			if ($section === '') {
+				$section = 'Notes';
+			}
+
+			$normalized_rows[] = [
+				'section' => $section,
+				'entity' => $entity,
+				'text' => $text,
+			];
+		}
+
+		if (empty($normalized_rows)) {
+			$stats = self::stats();
+			return [
+				'imported' => 0,
+				'total_entries' => (int) ($stats['total_entries'] ?? 0),
+				'unknown_entries' => (int) ($stats['unknown_entries'] ?? 0),
+				'known_entries' => (int) ($stats['known_entries'] ?? 0),
+			];
+		}
+
+		$all_names = array_values((array) $global_entity_names);
+		foreach ($normalized_rows as $row) {
+			if (!empty($row['entity'])) {
+				$all_names[] = (string) $row['entity'];
+			}
+		}
+
+		$all_names = self::normalize_entity_names($all_names);
+		$entity_ids = self::ensure_entities($all_names);
+		$unknown_id = self::ensure_entity('Unknown');
+		$now = current_time('mysql');
+
+		if ($replace_existing) {
+			$wpdb->query("TRUNCATE TABLE {$entry_entities_table}");
+			$wpdb->query("TRUNCATE TABLE {$entries_table}");
+			$seq_start = 1;
+		} else {
+			$seq_start = (int) $wpdb->get_var("SELECT COALESCE(MAX(seq), 0) + 1 FROM {$entries_table}");
+			if ($seq_start < 1) {
+				$seq_start = 1;
+			}
+		}
+
+		$imported = 0;
+		foreach ($normalized_rows as $i => $row) {
+			$text = (string) $row['text'];
+			$section = (string) $row['section'];
+			$source_entity = (string) $row['entity'];
+			$seq = $seq_start + $i;
+
+			$matches = [];
+			$status = 'unknown';
+			if ($source_entity !== '') {
+				$matches[$source_entity] = 1.0;
+				$status = 'known';
+			} else {
+				$matches = self::match_entities_for_entry($text, $all_names);
+				$status = !empty($matches) ? 'known' : 'unknown';
+			}
+
+			$wpdb->insert($entries_table, [
+				'seq' => $seq,
+				'section_name' => $section,
+				'source_entity' => $source_entity,
+				'entry_text' => $text,
+				'status' => $status,
+				'created_at' => $now,
+				'updated_at' => $now,
+			], ['%d', '%s', '%s', '%s', '%s', '%s', '%s']);
+
+			$entry_id = (int) $wpdb->insert_id;
+			if ($entry_id < 1) {
+				continue;
+			}
+			$imported++;
+
+			if (!empty($matches)) {
+				foreach ($matches as $name => $score) {
+					if (!isset($entity_ids[$name])) {
+						$entity_ids[$name] = self::ensure_entity($name);
+					}
+					$wpdb->insert($entry_entities_table, [
+						'entry_id' => $entry_id,
+						'entity_id' => (int) $entity_ids[$name],
+						'match_method' => $source_entity !== '' ? 'manual' : 'auto',
+						'match_score' => (float) $score,
+						'created_at' => $now,
+						'updated_at' => $now,
+					], ['%d', '%d', '%s', '%f', '%s', '%s']);
+				}
+			} else {
+				$wpdb->insert($entry_entities_table, [
+					'entry_id' => $entry_id,
+					'entity_id' => $unknown_id,
+					'match_method' => 'auto',
+					'match_score' => null,
+					'created_at' => $now,
+					'updated_at' => $now,
+				], ['%d', '%d', '%s', null, '%s', '%s']);
+			}
+		}
+
+		$stats = self::stats();
+		return [
+			'imported' => $imported,
+			'total_entries' => (int) ($stats['total_entries'] ?? 0),
+			'unknown_entries' => (int) ($stats['unknown_entries'] ?? 0),
+			'known_entries' => (int) ($stats['known_entries'] ?? 0),
+		];
+	}
+
 	public static function rebuild_start($cleaned, $global_entity_names = [], $job_key = '', $batch_size = 500) {
 		self::ensure_schema();
 		global $wpdb;
@@ -545,6 +685,10 @@ class PMM_DB {
 	}
 
 	public static function retag_unknown_entry($entry_id, $entity_names = []) {
+		return self::retag_entry_entities($entry_id, $entity_names);
+	}
+
+	public static function retag_entry_entities($entry_id, $entity_names = []) {
 		self::ensure_schema();
 		global $wpdb;
 		$entries_table = self::entries_table();
@@ -556,21 +700,42 @@ class PMM_DB {
 		}
 
 		$entity_names = self::normalize_entity_names($entity_names);
-		if (empty($entity_names)) {
+		$entry_status = (string) $wpdb->get_var($wpdb->prepare(
+			"SELECT status FROM {$entries_table} WHERE id = %d",
+			$entry_id
+		));
+		if ($entry_status === '' || $entry_status === 'pruned') {
 			return false;
 		}
 
 		$unknown_id = self::ensure_entity('Unknown');
-		$entity_ids = self::ensure_entities($entity_names);
 		$now = current_time('mysql');
 
 		$wpdb->delete($entry_entities_table, [
 			'entry_id' => $entry_id,
-			'entity_id' => $unknown_id,
-		], ['%d', '%d']);
+		], ['%d']);
 
+		if (empty($entity_names)) {
+			$wpdb->insert($entry_entities_table, [
+				'entry_id' => $entry_id,
+				'entity_id' => $unknown_id,
+				'match_method' => 'manual',
+				'match_score' => null,
+				'created_at' => $now,
+				'updated_at' => $now,
+			], ['%d', '%d', '%s', null, '%s', '%s']);
+
+			$updated = $wpdb->update($entries_table, [
+				'status' => 'unknown',
+				'updated_at' => $now,
+			], ['id' => $entry_id], ['%s', '%s'], ['%d']);
+
+			return $updated !== false;
+		}
+
+		$entity_ids = self::ensure_entities($entity_names);
 		foreach ($entity_ids as $entity_id) {
-			$wpdb->replace($entry_entities_table, [
+			$wpdb->insert($entry_entities_table, [
 				'entry_id' => $entry_id,
 				'entity_id' => (int) $entity_id,
 				'match_method' => 'manual',
@@ -580,12 +745,12 @@ class PMM_DB {
 			], ['%d', '%d', '%s', '%f', '%s', '%s']);
 		}
 
-		$wpdb->update($entries_table, [
+		$updated = $wpdb->update($entries_table, [
 			'status' => 'known',
 			'updated_at' => $now,
 		], ['id' => $entry_id], ['%s', '%s'], ['%d']);
 
-		return true;
+		return $updated !== false;
 	}
 
 	public static function update_unknown_entry_text($entry_id, $entry_text) {
