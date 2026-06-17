@@ -1347,18 +1347,30 @@ class PMM_Plugin {
 		];
 
 		$browse_status = isset($_POST['pmm_db_browse_status']) ? sanitize_key((string) wp_unslash($_POST['pmm_db_browse_status'])) : '';
+		$browse_mode = isset($_POST['pmm_db_browse_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_db_browse_mode'])) : '';
 		$browse_entity = isset($_POST['pmm_db_browse_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_db_browse_entity'])) : '';
 		$browse_search = isset($_POST['pmm_db_browse_search']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_db_browse_search'])) : '';
+		$browse_keywords = isset($_POST['pmm_db_browse_keywords']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_db_browse_keywords'])) : '';
+		$browse_skip = isset($_POST['pmm_db_browse_skip']) ? max(0, (int) wp_unslash((string) $_POST['pmm_db_browse_skip'])) : 0;
 		$browse_page = isset($_POST['pmm_db_browse_page']) ? max(1, (int) wp_unslash((string) $_POST['pmm_db_browse_page'])) : 1;
 
 		if ($browse_status !== '') {
 			$redirect_args['pmm_db_browse_status'] = $browse_status;
+		}
+		if ($browse_mode !== '') {
+			$redirect_args['pmm_db_browse_mode'] = $browse_mode;
 		}
 		if ($browse_entity !== '') {
 			$redirect_args['pmm_db_browse_entity'] = $browse_entity;
 		}
 		if ($browse_search !== '') {
 			$redirect_args['pmm_db_browse_search'] = $browse_search;
+		}
+		if ($browse_keywords !== '') {
+			$redirect_args['pmm_db_browse_keywords'] = $browse_keywords;
+		}
+		if ($browse_skip > 0) {
+			$redirect_args['pmm_db_browse_skip'] = $browse_skip;
 		}
 		if ($browse_page > 1) {
 			$redirect_args['pmm_db_browse_page'] = $browse_page;
@@ -1450,18 +1462,30 @@ class PMM_Plugin {
 		];
 
 		$browse_status = isset($_POST['pmm_db_browse_status']) ? sanitize_key((string) wp_unslash($_POST['pmm_db_browse_status'])) : '';
+		$browse_mode = isset($_POST['pmm_db_browse_mode']) ? sanitize_key((string) wp_unslash($_POST['pmm_db_browse_mode'])) : '';
 		$browse_entity = isset($_POST['pmm_db_browse_entity']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_db_browse_entity'])) : '';
 		$browse_search = isset($_POST['pmm_db_browse_search']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_db_browse_search'])) : '';
+		$browse_keywords = isset($_POST['pmm_db_browse_keywords']) ? sanitize_text_field((string) wp_unslash($_POST['pmm_db_browse_keywords'])) : '';
+		$browse_skip = isset($_POST['pmm_db_browse_skip']) ? max(0, (int) wp_unslash((string) $_POST['pmm_db_browse_skip'])) : 0;
 		$browse_page = isset($_POST['pmm_db_browse_page']) ? max(1, (int) wp_unslash((string) $_POST['pmm_db_browse_page'])) : 1;
 
 		if ($browse_status !== '') {
 			$redirect_args['pmm_db_browse_status'] = $browse_status;
+		}
+		if ($browse_mode !== '') {
+			$redirect_args['pmm_db_browse_mode'] = $browse_mode;
 		}
 		if ($browse_entity !== '') {
 			$redirect_args['pmm_db_browse_entity'] = $browse_entity;
 		}
 		if ($browse_search !== '') {
 			$redirect_args['pmm_db_browse_search'] = $browse_search;
+		}
+		if ($browse_keywords !== '') {
+			$redirect_args['pmm_db_browse_keywords'] = $browse_keywords;
+		}
+		if ($browse_skip > 0) {
+			$redirect_args['pmm_db_browse_skip'] = $browse_skip;
 		}
 		if ($browse_page > 1) {
 			$redirect_args['pmm_db_browse_page'] = $browse_page;

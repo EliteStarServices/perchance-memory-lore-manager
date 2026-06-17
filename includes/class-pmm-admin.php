@@ -420,19 +420,27 @@ class PMM_Admin {
 		}
 		$db_browse_status      = isset($_GET['pmm_db_browse_status'])  ? sanitize_key((string) wp_unslash($_GET['pmm_db_browse_status']))  : 'known';
 		if (!in_array($db_browse_status, ['all', 'known', 'unknown', 'pruned'], true)) { $db_browse_status = 'known'; }
+		$db_browse_mode        = isset($_GET['pmm_db_browse_mode']) ? sanitize_key((string) wp_unslash($_GET['pmm_db_browse_mode'])) : 'standard';
+		if (!in_array($db_browse_mode, ['standard', 'entity_exact_only', 'entity_contains', 'keywords'], true)) {
+			$db_browse_mode = 'standard';
+		}
 		$db_browse_search      = isset($_GET['pmm_db_browse_search'])  ? sanitize_text_field((string) wp_unslash($_GET['pmm_db_browse_search'])) : '';
 		$db_browse_entity      = isset($_GET['pmm_db_browse_entity'])  ? sanitize_text_field((string) wp_unslash($_GET['pmm_db_browse_entity'])) : '';
+		$db_browse_keywords    = isset($_GET['pmm_db_browse_keywords']) ? sanitize_text_field((string) wp_unslash($_GET['pmm_db_browse_keywords'])) : '';
+		$db_browse_skip        = isset($_GET['pmm_db_browse_skip']) ? max(0, (int) $_GET['pmm_db_browse_skip']) : 0;
 		$db_browse_page        = isset($_GET['pmm_db_browse_page'])    ? max(1, (int) $_GET['pmm_db_browse_page'])  : 1;
 		$db_browse_per_page    = 50;
-		$db_browse_offset      = ($db_browse_page - 1) * $db_browse_per_page;
+		$db_browse_offset      = $db_browse_skip + (($db_browse_page - 1) * $db_browse_per_page);
 		$db_browse_total       = 0;
+		$db_browse_total_found = 0;
 		$db_browse_rows        = [];
 		$db_all_entity_names   = [];
 		if ((int) ($db_stats['total_entries'] ?? 0) > 0) {
 			$db_all_entity_names = PMM_DB::get_all_entity_names();
-			$db_browse_total     = PMM_DB::count_entries_filtered($db_browse_status, $db_browse_search, $db_browse_entity);
-			if ($db_browse_offset < $db_browse_total) {
-				$db_browse_rows  = PMM_DB::get_entries_with_entity_names($db_browse_per_page, $db_browse_offset, $db_browse_status, $db_browse_search, $db_browse_entity);
+			$db_browse_total_found = PMM_DB::count_entries_filtered($db_browse_status, $db_browse_search, $db_browse_entity, $db_browse_mode, $db_browse_keywords);
+			$db_browse_total = max(0, $db_browse_total_found - $db_browse_skip);
+			if ($db_browse_offset < $db_browse_total_found) {
+				$db_browse_rows  = PMM_DB::get_entries_with_entity_names($db_browse_per_page, $db_browse_offset, $db_browse_status, $db_browse_search, $db_browse_entity, $db_browse_mode, $db_browse_keywords);
 			}
 		}
 		$db_dedupe_preview = get_transient('pmm_db_dedupe_preview_' . get_current_user_id());
@@ -917,17 +925,26 @@ class PMM_Admin {
 				<div class="notice notice-success"><p><?php echo esc_html(sprintf(__('Non-prefix entry review applied: %1$d reviewed, %2$d removed, %3$d updated, %4$d marked critical.', 'perchance-memory-manager'), max(0, $prune_nonprefix_reviewed), max(0, $prune_nonprefix_removed), max(0, $prune_nonprefix_updated), max(0, $prune_nonprefix_critical))); ?></p></div>
 			<?php endif; ?>
 
-			<?php if ($rules_dirty) : ?>
-				<div class="notice notice-warning"><p>
-					<?php
-					echo esc_html(
-						sprintf(
-							__('Output-affecting rules changed%1$s. Reprocess to bring preview/download in sync.', 'perchance-memory-manager'),
-							$rules_dirty_at > 0 ? ' (' . wp_date('Y-m-d H:i', $rules_dirty_at) . ')' : ''
-						)
-					);
-					?>
-				</p></div>
+			<?php if (false && $rules_dirty) : ?>
+				<div class="notice notice-warning">
+					<p>
+						<?php
+						echo esc_html(
+							sprintf(
+								__('Output-affecting rules changed%1$s. Reprocess to bring preview/download in sync.', 'perchance-memory-manager'),
+								$rules_dirty_at > 0 ? ' (' . wp_date('Y-m-d H:i', $rules_dirty_at) . ')' : ''
+							)
+						);
+						?>
+					</p>
+					<?php if ($has_last_output) : ?>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 0 0;">
+							<?php wp_nonce_field('pmm_reprocess_last_output'); ?>
+							<input type="hidden" name="action" value="pmm_reprocess_last_output">
+							<?php submit_button(__('Reprocess Last Output Now', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
+						</form>
+					<?php endif; ?>
+				</div>
 			<?php else : ?>
 				<div class="notice notice-success"><p><?php esc_html_e('Output is in sync. Saving in Entity Workspace or Editable Preview updates the latest output directly; reprocess is only needed after rule/staging changes.', 'perchance-memory-manager'); ?></p></div>
 			<?php endif; ?>
@@ -973,7 +990,8 @@ class PMM_Admin {
 			<?php endif; ?>
 
 			<div class="pmm-card">
-				<h2><?php esc_html_e('Upload and Process', 'perchance-memory-manager'); ?></h2>
+				<details class="pmm-collapsible-section pmm-collapsible-root">
+					<summary><strong><?php esc_html_e('Upload and Process', 'perchance-memory-manager'); ?></strong></summary>
 				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0 0 12px 0;padding:10px;border:1px solid #dcdcde;background:#fff;">
 					<?php wp_nonce_field('pmm_clear_entries_store'); ?>
 					<input type="hidden" name="action" value="pmm_clear_entries_store">
@@ -1606,15 +1624,25 @@ class PMM_Admin {
 					<p class="description" style="margin-top:8px;"><?php echo esc_html(sprintf(__('Currently staged: %d row(s). They will be injected on the next upload or reprocess, then cleared automatically.', 'perchance-memory-manager'), count($staged_raw_rows))); ?></p>
 				<?php endif; ?>
 				</details>
+
+
 			</div>
 
 			<?php if ((int) ($db_stats['total_entries'] ?? 0) > 0) : ?>
 				<div class="pmm-card">
 					<details class="pmm-collapsible-section pmm-collapsible-root">
 						<summary><strong><?php echo esc_html(sprintf(__('DB Entry Browser (%d entries)', 'perchance-memory-manager'), (int) ($db_stats['total_entries'] ?? 0))); ?></strong></summary>
-						<p class="description"><?php esc_html_e('Browse and search all entries in the DB. Filter by status, entity, or search text.', 'perchance-memory-manager'); ?></p>
+						<p class="description"><?php esc_html_e('Chronological prune scan in 50-entry blocks. Choose a mode: tagged exact entity, entries containing an entity name, or keyword query. Use Skip to jump past earlier matches.', 'perchance-memory-manager'); ?></p>
 						<form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" style="margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;">
 							<input type="hidden" name="page" value="perchance-memory-manager">
+							<label><?php esc_html_e('Scan mode', 'perchance-memory-manager'); ?><br>
+								<select name="pmm_db_browse_mode">
+									<option value="standard" <?php selected($db_browse_mode, 'standard'); ?>><?php esc_html_e('Standard browser', 'perchance-memory-manager'); ?></option>
+									<option value="entity_exact_only" <?php selected($db_browse_mode, 'entity_exact_only'); ?>><?php esc_html_e('Only selected tagged entity', 'perchance-memory-manager'); ?></option>
+									<option value="entity_contains" <?php selected($db_browse_mode, 'entity_contains'); ?>><?php esc_html_e('Entry contains selected entity name', 'perchance-memory-manager'); ?></option>
+									<option value="keywords" <?php selected($db_browse_mode, 'keywords'); ?>><?php esc_html_e('Keyword scan', 'perchance-memory-manager'); ?></option>
+								</select>
+							</label>
 							<label><?php esc_html_e('Status', 'perchance-memory-manager'); ?><br>
 								<select name="pmm_db_browse_status">
 									<?php foreach (['known' => 'Known', 'unknown' => 'Unknown', 'pruned' => 'Pruned', 'all' => 'All'] as $sv => $sl) : ?>
@@ -1632,8 +1660,14 @@ class PMM_Admin {
 								</select>
 							</label>
 							<?php endif; ?>
-							<label><?php esc_html_e('Search text', 'perchance-memory-manager'); ?><br>
+							<label><?php esc_html_e('Search text (standard mode)', 'perchance-memory-manager'); ?><br>
 								<input type="search" name="pmm_db_browse_search" value="<?php echo esc_attr($db_browse_search); ?>" class="regular-text" placeholder="<?php esc_attr_e('keyword…', 'perchance-memory-manager'); ?>">
+							</label>
+							<label><?php esc_html_e('Keywords (keyword mode)', 'perchance-memory-manager'); ?><br>
+								<input type="search" name="pmm_db_browse_keywords" value="<?php echo esc_attr($db_browse_keywords); ?>" class="regular-text" placeholder="<?php esc_attr_e('alpha beta', 'perchance-memory-manager'); ?>">
+							</label>
+							<label><?php esc_html_e('Skip matches', 'perchance-memory-manager'); ?><br>
+								<input type="number" min="0" step="1" name="pmm_db_browse_skip" value="<?php echo esc_attr((string) $db_browse_skip); ?>" style="width:110px;">
 							</label>
 							<input type="hidden" name="pmm_db_browse_page" value="1">
 							<?php submit_button(__('Search', 'perchance-memory-manager'), 'secondary', 'submit', false, ['style' => 'margin:0;']); ?>
@@ -1643,14 +1677,14 @@ class PMM_Admin {
 							$db_browse_total_pages = max(1, (int) ceil($db_browse_total / $db_browse_per_page));
 							$db_browse_page = min($db_browse_page, $db_browse_total_pages);
 							?>
-							<p class="description"><?php echo esc_html(sprintf(__('%1$d results — page %2$d of %3$d', 'perchance-memory-manager'), $db_browse_total, $db_browse_page, $db_browse_total_pages)); ?></p>
+							<p class="description"><?php echo esc_html(sprintf(__('Showing 50-entry review blocks after skipping %1$d matches. Remaining matches: %2$d — block %3$d of %4$d.', 'perchance-memory-manager'), max(0, $db_browse_skip), $db_browse_total, $db_browse_page, $db_browse_total_pages)); ?></p>
 							<?php if ($db_browse_total_pages > 1) : ?>
 							<p style="margin:6px 0;">
 								<?php if ($db_browse_page > 1) : ?>
-									<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_db_browse_page' => $db_browse_page - 1, 'pmm_db_browse_status' => $db_browse_status, 'pmm_db_browse_entity' => $db_browse_entity, 'pmm_db_browse_search' => $db_browse_search])); ?>"><?php esc_html_e('← Prev', 'perchance-memory-manager'); ?></a>
+									<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_db_browse_page' => $db_browse_page - 1, 'pmm_db_browse_status' => $db_browse_status, 'pmm_db_browse_mode' => $db_browse_mode, 'pmm_db_browse_entity' => $db_browse_entity, 'pmm_db_browse_search' => $db_browse_search, 'pmm_db_browse_keywords' => $db_browse_keywords, 'pmm_db_browse_skip' => $db_browse_skip])); ?>"><?php esc_html_e('← Prev', 'perchance-memory-manager'); ?></a>
 								<?php endif; ?>
 								<?php if ($db_browse_page < $db_browse_total_pages) : ?>
-									<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_db_browse_page' => $db_browse_page + 1, 'pmm_db_browse_status' => $db_browse_status, 'pmm_db_browse_entity' => $db_browse_entity, 'pmm_db_browse_search' => $db_browse_search])); ?>"><?php esc_html_e('Next →', 'perchance-memory-manager'); ?></a>
+									<a class="button" href="<?php echo esc_url(add_query_arg(['pmm_db_browse_page' => $db_browse_page + 1, 'pmm_db_browse_status' => $db_browse_status, 'pmm_db_browse_mode' => $db_browse_mode, 'pmm_db_browse_entity' => $db_browse_entity, 'pmm_db_browse_search' => $db_browse_search, 'pmm_db_browse_keywords' => $db_browse_keywords, 'pmm_db_browse_skip' => $db_browse_skip])); ?>"><?php esc_html_e('Next →', 'perchance-memory-manager'); ?></a>
 								<?php endif; ?>
 							</p>
 							<?php endif; ?>
@@ -1700,8 +1734,11 @@ class PMM_Admin {
 								<input type="hidden" name="action" value="pmm_db_bulk_prune_entries">
 								<input type="hidden" name="pmm_db_bulk_prune_ids" id="pmm_db_browser_bulk_ids" value="">
 								<input type="hidden" name="pmm_db_browse_status" value="<?php echo esc_attr($db_browse_status); ?>">
+								<input type="hidden" name="pmm_db_browse_mode" value="<?php echo esc_attr($db_browse_mode); ?>">
 								<input type="hidden" name="pmm_db_browse_entity" value="<?php echo esc_attr($db_browse_entity); ?>">
 								<input type="hidden" name="pmm_db_browse_search" value="<?php echo esc_attr($db_browse_search); ?>">
+								<input type="hidden" name="pmm_db_browse_keywords" value="<?php echo esc_attr($db_browse_keywords); ?>">
+								<input type="hidden" name="pmm_db_browse_skip" value="<?php echo esc_attr((string) $db_browse_skip); ?>">
 								<input type="hidden" name="pmm_db_browse_page" value="<?php echo esc_attr((string) $db_browse_page); ?>">
 								<?php submit_button(__('Delete Selected', 'perchance-memory-manager'), 'delete', 'submit', false, ['onclick' => "return confirm('" . esc_js(__('Mark selected entries as removed (pruned)?', 'perchance-memory-manager')) . "');"]); ?>
 								<span id="pmm_db_browser_bulk_count" class="description"><?php esc_html_e('0 selected', 'perchance-memory-manager'); ?></span>
@@ -1711,8 +1748,11 @@ class PMM_Admin {
 								<input type="hidden" name="action" value="pmm_db_bulk_update_entries">
 								<input type="hidden" name="pmm_db_bulk_update_rows" id="pmm_db_browser_bulk_update_rows" value="[]">
 								<input type="hidden" name="pmm_db_browse_status" value="<?php echo esc_attr($db_browse_status); ?>">
+								<input type="hidden" name="pmm_db_browse_mode" value="<?php echo esc_attr($db_browse_mode); ?>">
 								<input type="hidden" name="pmm_db_browse_entity" value="<?php echo esc_attr($db_browse_entity); ?>">
 								<input type="hidden" name="pmm_db_browse_search" value="<?php echo esc_attr($db_browse_search); ?>">
+								<input type="hidden" name="pmm_db_browse_keywords" value="<?php echo esc_attr($db_browse_keywords); ?>">
+								<input type="hidden" name="pmm_db_browse_skip" value="<?php echo esc_attr((string) $db_browse_skip); ?>">
 								<input type="hidden" name="pmm_db_browse_page" value="<?php echo esc_attr((string) $db_browse_page); ?>">
 								<?php submit_button(__('Save Selected Edits', 'perchance-memory-manager'), 'secondary', 'submit', false); ?>
 							</form>
@@ -3158,6 +3198,15 @@ class PMM_Admin {
 					<li><?php esc_html_e('Notes (section-level)', 'perchance-memory-manager'); ?></li>
 					</ul>
 					<?php $this->render_confirmed_entity_registry_table($confirmed_registry); ?>
+				</details>
+			</div>
+
+			<div class="pmm-card">
+				<details class="pmm-collapsible-section pmm-collapsible-root">
+					<summary><strong><?php esc_html_e('Alias Rules', 'perchance-memory-manager'); ?></strong></summary>
+					<div style="margin-top:10px;">
+						<?php $this->render_alias_rules_manager(); ?>
+					</div>
 				</details>
 			</div>
 

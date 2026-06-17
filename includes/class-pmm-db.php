@@ -178,7 +178,7 @@ class PMM_DB {
 		return $out;
 	}
 
-	public static function get_entries_with_entity_names($limit = 100, $offset = 0, $status = 'known', $search = '', $entity_filter = '') {
+	public static function get_entries_with_entity_names($limit = 100, $offset = 0, $status = 'known', $search = '', $entity_filter = '', $scan_mode = 'standard', $keywords = '') {
 		self::ensure_schema();
 		global $wpdb;
 		$entries_table        = self::entries_table();
@@ -189,6 +189,10 @@ class PMM_DB {
 		$offset = max(0, (int) $offset);
 		$valid_statuses = ['all', 'known', 'unknown', 'pruned'];
 		if (!in_array($status, $valid_statuses, true)) { $status = 'known'; }
+		$valid_modes = ['standard', 'entity_exact_only', 'entity_contains', 'keywords'];
+		if (!in_array($scan_mode, $valid_modes, true)) {
+			$scan_mode = 'standard';
+		}
 
 		$where  = [];
 		$params = [];
@@ -199,15 +203,40 @@ class PMM_DB {
 		}
 
 		$search = trim((string) $search);
-		if ($search !== '') {
+		if ($scan_mode === 'standard' && $search !== '') {
 			$where[] = 'e.entry_text LIKE %s';
 			$params[] = '%' . $wpdb->esc_like($search) . '%';
 		}
 
 		$entity_filter = trim((string) $entity_filter);
-		if ($entity_filter !== '') {
+		if ($scan_mode === 'standard' && $entity_filter !== '') {
 			$where[] = 'en.name = %s';
 			$params[] = $entity_filter;
+		}
+
+		if ($scan_mode === 'entity_contains' && $entity_filter !== '') {
+			$where[] = 'e.entry_text LIKE %s';
+			$params[] = '%' . $wpdb->esc_like($entity_filter) . '%';
+		}
+
+		if ($scan_mode === 'entity_exact_only' && $entity_filter !== '') {
+			$where[] = "e.id IN (
+				SELECT ee2.entry_id
+				FROM {$entry_entities_table} ee2
+				INNER JOIN {$entities_table} en2 ON en2.id = ee2.entity_id
+				GROUP BY ee2.entry_id
+				HAVING SUM(CASE WHEN en2.name != 'Unknown' THEN 1 ELSE 0 END) = 1
+				   AND SUM(CASE WHEN en2.name = %s THEN 1 ELSE 0 END) = 1
+			)";
+			$params[] = $entity_filter;
+		}
+
+		if ($scan_mode === 'keywords') {
+			$terms = self::parse_keyword_terms($keywords);
+			foreach ($terms as $term) {
+				$where[] = 'e.entry_text LIKE %s';
+				$params[] = '%' . $wpdb->esc_like($term) . '%';
+			}
 		}
 
 		$where_sql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -221,14 +250,14 @@ class PMM_DB {
 			LEFT JOIN {$entities_table} en ON en.id = ee.entity_id
 			{$where_sql}
 			GROUP BY e.id
-			ORDER BY e.id ASC
+			ORDER BY e.seq ASC, e.id ASC
 			LIMIT %d OFFSET %d";
 
 		$rows = $wpdb->get_results($wpdb->prepare($sql, $params), ARRAY_A);
 		return is_array($rows) ? $rows : [];
 	}
 
-	public static function count_entries_filtered($status = 'known', $search = '', $entity_filter = '') {
+	public static function count_entries_filtered($status = 'known', $search = '', $entity_filter = '', $scan_mode = 'standard', $keywords = '') {
 		self::ensure_schema();
 		global $wpdb;
 		$entries_table        = self::entries_table();
@@ -237,6 +266,10 @@ class PMM_DB {
 
 		$valid_statuses = ['all', 'known', 'unknown', 'pruned'];
 		if (!in_array($status, $valid_statuses, true)) { $status = 'known'; }
+		$valid_modes = ['standard', 'entity_exact_only', 'entity_contains', 'keywords'];
+		if (!in_array($scan_mode, $valid_modes, true)) {
+			$scan_mode = 'standard';
+		}
 
 		$where  = [];
 		$params = [];
@@ -248,23 +281,76 @@ class PMM_DB {
 		}
 
 		$search = trim((string) $search);
-		if ($search !== '') {
+		if ($scan_mode === 'standard' && $search !== '') {
 			$where[] = 'e.entry_text LIKE %s';
 			$params[] = '%' . $wpdb->esc_like($search) . '%';
 		}
 
 		$entity_filter = trim((string) $entity_filter);
-		if ($entity_filter !== '') {
+		if ($scan_mode === 'standard' && $entity_filter !== '') {
 			$join    = "INNER JOIN {$entry_entities_table} ee ON ee.entry_id = e.id
 			            INNER JOIN {$entities_table} en ON en.id = ee.entity_id";
 			$where[] = 'en.name = %s';
 			$params[] = $entity_filter;
 		}
 
+		if ($scan_mode === 'entity_contains' && $entity_filter !== '') {
+			$where[] = 'e.entry_text LIKE %s';
+			$params[] = '%' . $wpdb->esc_like($entity_filter) . '%';
+		}
+
+		if ($scan_mode === 'entity_exact_only' && $entity_filter !== '') {
+			$where[] = "e.id IN (
+				SELECT ee2.entry_id
+				FROM {$entry_entities_table} ee2
+				INNER JOIN {$entities_table} en2 ON en2.id = ee2.entity_id
+				GROUP BY ee2.entry_id
+				HAVING SUM(CASE WHEN en2.name != 'Unknown' THEN 1 ELSE 0 END) = 1
+				   AND SUM(CASE WHEN en2.name = %s THEN 1 ELSE 0 END) = 1
+			)";
+			$params[] = $entity_filter;
+		}
+
+		if ($scan_mode === 'keywords') {
+			$terms = self::parse_keyword_terms($keywords);
+			foreach ($terms as $term) {
+				$where[] = 'e.entry_text LIKE %s';
+				$params[] = '%' . $wpdb->esc_like($term) . '%';
+			}
+		}
+
 		$where_sql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 		$sql       = "SELECT COUNT(DISTINCT e.id) FROM {$entries_table} e {$join} {$where_sql}";
 
 		return (int) ($params ? $wpdb->get_var($wpdb->prepare($sql, $params)) : $wpdb->get_var($sql));
+	}
+
+	private static function parse_keyword_terms($keywords) {
+		$keywords = trim((string) $keywords);
+		if ($keywords === '') {
+			return [];
+		}
+
+		$parts = preg_split('/[\s,]+/', $keywords, -1, PREG_SPLIT_NO_EMPTY);
+		if (!is_array($parts)) {
+			return [];
+		}
+
+		$terms = [];
+		foreach ($parts as $part) {
+			$term = trim((string) $part);
+			if ($term === '') {
+				continue;
+			}
+			$terms[] = $term;
+		}
+
+		$terms = array_values(array_unique($terms));
+		if (count($terms) > 8) {
+			$terms = array_slice($terms, 0, 8);
+		}
+
+		return $terms;
 	}
 
 	public static function get_all_entity_names() {
