@@ -234,8 +234,8 @@ class PMM_DB {
 		if ($scan_mode === 'keywords') {
 			$terms = self::parse_keyword_terms($keywords);
 			foreach ($terms as $term) {
-				$where[] = 'e.entry_text LIKE %s';
-				$params[] = '%' . $wpdb->esc_like($term) . '%';
+				$where[] = 'e.entry_text REGEXP %s';
+				$params[] = self::build_keyword_match_regex($term);
 			}
 		}
 
@@ -314,8 +314,8 @@ class PMM_DB {
 		if ($scan_mode === 'keywords') {
 			$terms = self::parse_keyword_terms($keywords);
 			foreach ($terms as $term) {
-				$where[] = 'e.entry_text LIKE %s';
-				$params[] = '%' . $wpdb->esc_like($term) . '%';
+				$where[] = 'e.entry_text REGEXP %s';
+				$params[] = self::build_keyword_match_regex($term);
 			}
 		}
 
@@ -323,6 +323,83 @@ class PMM_DB {
 		$sql       = "SELECT COUNT(DISTINCT e.id) FROM {$entries_table} e {$join} {$where_sql}";
 
 		return (int) ($params ? $wpdb->get_var($wpdb->prepare($sql, $params)) : $wpdb->get_var($sql));
+	}
+
+	public static function get_entries_filtered_preview($status = 'known', $search = '', $entity_filter = '', $scan_mode = 'standard', $keywords = '', $skip = 0, $limit = 2000) {
+		$skip = max(0, (int) $skip);
+		$limit = max(1, min(5000, (int) $limit));
+
+		$total_found = self::count_entries_filtered($status, $search, $entity_filter, $scan_mode, $keywords);
+		if ($skip >= $total_found) {
+			return [];
+		}
+
+		$remaining = min($limit, max(0, $total_found - $skip));
+		$offset = $skip;
+		$rows = [];
+
+		while ($remaining > 0) {
+			$batch_size = min(500, $remaining);
+			$batch = self::get_entries_with_entity_names($batch_size, $offset, $status, $search, $entity_filter, $scan_mode, $keywords);
+			if (empty($batch)) {
+				break;
+			}
+
+			$rows = array_merge($rows, $batch);
+			$fetched = count($batch);
+			$offset += $fetched;
+			$remaining -= $fetched;
+
+			if ($fetched < $batch_size) {
+				break;
+			}
+		}
+
+		return $rows;
+	}
+
+	public static function get_entry_ids_filtered($status = 'known', $search = '', $entity_filter = '', $scan_mode = 'standard', $keywords = '', $skip = 0, $max_ids = 0) {
+		$skip = max(0, (int) $skip);
+		$max_ids = max(0, (int) $max_ids);
+
+		$total_found = self::count_entries_filtered($status, $search, $entity_filter, $scan_mode, $keywords);
+		if ($skip >= $total_found) {
+			return [];
+		}
+
+		$remaining = max(0, $total_found - $skip);
+		if ($max_ids > 0) {
+			$remaining = min($remaining, $max_ids);
+		}
+
+		$offset = $skip;
+		$ids = [];
+
+		while ($remaining > 0) {
+			$batch_size = min(500, $remaining);
+			$batch = self::get_entries_with_entity_names($batch_size, $offset, $status, $search, $entity_filter, $scan_mode, $keywords);
+			if (empty($batch)) {
+				break;
+			}
+
+			foreach ($batch as $row) {
+				$entry_id = isset($row['id']) ? (int) $row['id'] : 0;
+				if ($entry_id > 0) {
+					$ids[] = $entry_id;
+				}
+			}
+
+			$fetched = count($batch);
+			$offset += $fetched;
+			$remaining -= $fetched;
+
+			if ($fetched < $batch_size) {
+				break;
+			}
+		}
+
+		$ids = array_values(array_unique($ids));
+		return $ids;
 	}
 
 	private static function parse_keyword_terms($keywords) {
@@ -351,6 +428,16 @@ class PMM_DB {
 		}
 
 		return $terms;
+	}
+
+	private static function build_keyword_match_regex($term) {
+		$term = trim((string) $term);
+		if ($term === '') {
+			return '$.^';
+		}
+
+		$escaped = preg_quote($term, '/');
+		return '(^|[[:space:][:punct:]])' . $escaped . '([[:space:][:punct:]]|$)';
 	}
 
 	public static function get_all_entity_names() {
@@ -774,7 +861,7 @@ class PMM_DB {
 		return self::retag_entry_entities($entry_id, $entity_names);
 	}
 
-	public static function retag_entry_entities($entry_id, $entity_names = []) {
+	public static function retag_entry_entities($entry_id, $entity_names = [], $allow_pruned_restore = false) {
 		self::ensure_schema();
 		global $wpdb;
 		$entries_table = self::entries_table();
@@ -790,7 +877,10 @@ class PMM_DB {
 			"SELECT status FROM {$entries_table} WHERE id = %d",
 			$entry_id
 		));
-		if ($entry_status === '' || $entry_status === 'pruned') {
+		if ($entry_status === '') {
+			return false;
+		}
+		if ($entry_status === 'pruned' && !$allow_pruned_restore) {
 			return false;
 		}
 
@@ -951,6 +1041,66 @@ class PMM_DB {
 		}
 
 		return $updated === false ? 0 : max(0, (int) $updated);
+	}
+
+	public static function mark_entries_restored($entry_ids = []) {
+		self::ensure_schema();
+		global $wpdb;
+		$entries_table = self::entries_table();
+		$entities_table = self::entities_table();
+		$entry_entities_table = self::entry_entities_table();
+
+		$ids = [];
+		foreach ((array) $entry_ids as $entry_id) {
+			$entry_id = (int) $entry_id;
+			if ($entry_id > 0) {
+				$ids[] = $entry_id;
+			}
+		}
+		$ids = array_values(array_unique($ids));
+		if (empty($ids)) {
+			return 0;
+		}
+
+		$now = current_time('mysql');
+		$placeholders = implode(',', array_fill(0, count($ids), '%d'));
+
+		$params_known = array_merge([$now], $ids);
+		$known_updated = $wpdb->query($wpdb->prepare(
+			"UPDATE {$entries_table} e
+			 SET e.status = 'known', e.updated_at = %s
+			 WHERE e.id IN ({$placeholders})
+			   AND e.status = 'pruned'
+			   AND EXISTS (
+				   SELECT 1
+				   FROM {$entry_entities_table} ee
+				   INNER JOIN {$entities_table} en ON en.id = ee.entity_id
+				   WHERE ee.entry_id = e.id
+				     AND en.name <> 'Unknown'
+			   )",
+			$params_known
+		));
+
+		$params_unknown = array_merge([$now], $ids);
+		$unknown_updated = $wpdb->query($wpdb->prepare(
+			"UPDATE {$entries_table} e
+			 SET e.status = 'unknown', e.updated_at = %s
+			 WHERE e.id IN ({$placeholders})
+			   AND e.status = 'pruned'
+			   AND NOT EXISTS (
+				   SELECT 1
+				   FROM {$entry_entities_table} ee
+				   INNER JOIN {$entities_table} en ON en.id = ee.entity_id
+				   WHERE ee.entry_id = e.id
+				     AND en.name <> 'Unknown'
+			   )",
+			$params_unknown
+		));
+
+		$known_count = $known_updated === false ? 0 : max(0, (int) $known_updated);
+		$unknown_count = $unknown_updated === false ? 0 : max(0, (int) $unknown_updated);
+
+		return $known_count + $unknown_count;
 	}
 
 	public static function update_entries_text_bulk($rows = []) {
