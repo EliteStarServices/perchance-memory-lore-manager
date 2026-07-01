@@ -15,7 +15,13 @@ class PMM_Memory_Core {
     const LEGACY_TABLE_SLUG = 'pmm_memory_files';
     const PAGE_SLUG = 'pmm-memory-core';
     const ENTITY_LIST_COUNT = 3;
+    const ENTITY_LIST_LABELS = [
+        1 => 'Characters',
+        2 => 'Organizations',
+        3 => 'Locations',
+    ];
     const SEARCH_RESULTS_PER_PAGE = 25;
+    const REVISION_LIMIT = 3;
 
     private $file_labels = [
         'lore' => 'Lore',
@@ -35,6 +41,7 @@ class PMM_Memory_Core {
         add_action('admin_post_pmm_core_upload_file', [$this, 'handle_upload_file']);
         add_action('admin_post_pmm_core_download_file', [$this, 'handle_download_file']);
         add_action('admin_post_pmm_core_clear_file', [$this, 'handle_clear_file']);
+        add_action('admin_post_pmm_core_restore_revision', [$this, 'handle_restore_revision']);
     }
 
     public function activate() {
@@ -58,7 +65,8 @@ class PMM_Memory_Core {
             wp_die(esc_html__('You do not have permission to view this page.', 'pmm-memory-core'));
         }
 
-        $selected = isset($_GET['pmm_file']) ? $this->normalize_file_key(wp_unslash((string) $_GET['pmm_file'])) : 'lore';
+        $has_file_query = isset($_GET['pmm_file']);
+        $selected = isset($_GET['pmm_file']) ? $this->normalize_file_key(wp_unslash((string) $_GET['pmm_file'])) : $this->stored_file_key();
         $notice = isset($_GET['pmm_notice']) ? sanitize_key((string) wp_unslash($_GET['pmm_notice'])) : '';
         $content = $this->get_file_content($selected);
         $entry_count = $this->get_file_entry_count($selected);
@@ -87,6 +95,8 @@ class PMM_Memory_Core {
                 'upload_missing' => 'No file was uploaded.',
                 'upload_invalid' => 'Invalid upload type. Use .txt or .md.',
                 'upload_read_failed' => 'Could not read uploaded file.',
+                'revision_restored' => 'Revision restored.',
+                'revision_missing' => 'Revision not found.',
             ];
             if (isset($messages[$notice])) {
                 echo '<div class="notice notice-success"><p>' . esc_html($messages[$notice]) . '</p></div>';
@@ -103,18 +113,21 @@ class PMM_Memory_Core {
         echo '</select> ';
         submit_button('Load', 'secondary', 'submit', false);
         echo '</form>';
+        echo '<script>document.addEventListener("DOMContentLoaded", function(){ var key="pmm_core_selected_file"; var select=document.getElementById("pmm_file"); if(!select){ return; } var saveSelection=function(){ try{ if(window.localStorage){ window.localStorage.setItem(key, select.value); } }catch(e){} document.cookie=key + "=" + encodeURIComponent(select.value) + "; path=/; max-age=31536000; SameSite=Lax"; }; select.addEventListener("change", saveSelection); var form=select.closest("form"); if(form){ form.addEventListener("submit", saveSelection); } saveSelection(); });</script>';
 
         echo '<hr>';
         echo '<details id="pmm_core_entity_lists_panel" open style="width:99%;margin-bottom:20px;">';
-        echo '<summary><strong>Global Entity Lists</strong></summary>';
+        echo '<summary><h2>Global Entity Lists</h2></summary>';
         echo '<p class="description" style="margin-top:10px;">These lists are saved globally and can be used to search across all stored entries in every slot.</p>';
+        $entity_list_revisions = $this->get_entity_list_revisions();
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-bottom:0;">';
         wp_nonce_field('pmm_core_save_entity_lists');
         echo '<input type="hidden" name="action" value="pmm_core_save_entity_lists">';
         echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;width:99%;">';
         for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
+            $list_label = isset(self::ENTITY_LIST_LABELS[$index]) ? self::ENTITY_LIST_LABELS[$index] : ('Entity List ' . $index);
             echo '<div>';
-            echo '<label for="pmm_entity_list_' . esc_attr((string) $index) . '"><strong>Entity List ' . esc_html((string) $index) . '</strong></label>';
+            echo '<label for="pmm_entity_list_' . esc_attr((string) $index) . '"><strong>' . esc_html($list_label) . '</strong></label>';
             echo '<textarea id="pmm_entity_list_' . esc_attr((string) $index) . '" name="pmm_entity_list_' . esc_attr((string) $index) . '" rows="10" class="large-text code" style="margin-top:6px;width:99%;box-sizing:border-box;">' . esc_textarea($entity_lists[$index]) . '</textarea>';
             echo '<p class="description">One term per line, or comma-separated.</p>';
             echo '</div>';
@@ -124,24 +137,45 @@ class PMM_Memory_Core {
         submit_button('Save Entity Lists', 'secondary', 'submit', false);
         echo '</p>';
         echo '</form>';
+        if (!empty($entity_list_revisions)) {
+            echo '<div style="margin:8px 0 12px 0;padding:10px;border:1px solid #dcdcde;background:#fff;width:99%;box-sizing:border-box;">';
+            echo '<p style="margin:0 0 8px 0;"><strong>Recent Revisions for Global Entity Lists</strong> <span class="description">(keeps latest ' . esc_html((string) self::REVISION_LIMIT) . ' snapshots automatically)</span></p>';
+            foreach ($entity_list_revisions as $rev_index => $revision) {
+                if (!is_array($revision) || !isset($revision['saved_at'])) {
+                    continue;
+                }
+                $saved_at = (int) $revision['saved_at'];
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:flex;align-items:center;gap:8px;margin:0 0 6px 0;">';
+                wp_nonce_field('pmm_core_restore_revision');
+                echo '<input type="hidden" name="action" value="pmm_core_restore_revision">';
+                echo '<input type="hidden" name="pmm_revision_target" value="entity_lists">';
+                echo '<input type="hidden" name="pmm_revision_index" value="' . esc_attr((string) $rev_index) . '">';
+                echo '<span>' . esc_html('Revision ' . ((int) $rev_index + 1) . ': ' . wp_date('Y-m-d H:i:s', $saved_at)) . '</span>';
+                submit_button('Restore', 'secondary', 'submit', false, ['onclick' => "return confirm('Restore this revision for the global entity lists?');", 'style' => 'margin:0;']);
+                echo '</form>';
+            }
+            echo '</div>';
+        }
         echo '</details>';
-        echo '<script>document.addEventListener("DOMContentLoaded", function(){ var panel=document.getElementById("pmm_core_entity_lists_panel"); if(!panel || !window.localStorage){ return; } var key="pmm_core_entity_lists_panel_open"; var stored=window.localStorage.getItem(key); if(stored==="closed"){ panel.open=false; } else if(stored==="open"){ panel.open=true; } panel.addEventListener("toggle", function(){ window.localStorage.setItem(key, panel.open ? "open" : "closed"); }); });</script>';
+        echo '<script>(function(){ var init=function(){ var panel=document.getElementById("pmm_core_entity_lists_panel"); if(!panel){ return; } var key="pmm_core_entity_lists_panel_open"; var cookieName=key + "="; var readState=function(){ try{ if(window.localStorage){ var value=window.localStorage.getItem(key); if(value==="open" || value==="closed"){ return value; } } }catch(e){} var cookie=document.cookie ? document.cookie.split(";") : []; for(var i=0;i<cookie.length;i++){ var c=cookie[i].trim(); if(c.indexOf(cookieName)===0){ var cv=c.substring(cookieName.length); if(cv==="open" || cv==="closed"){ return cv; } } } return null; }; var writeState=function(value){ try{ if(window.localStorage){ window.localStorage.setItem(key, value); } }catch(e){} document.cookie=key + "=" + value + "; path=/; max-age=31536000; SameSite=Lax"; }; var stored=readState(); if(stored==="closed"){ panel.open=false; } else if(stored==="open"){ panel.open=true; } writeState(panel.open ? "open" : "closed"); panel.addEventListener("toggle", function(){ writeState(panel.open ? "open" : "closed"); }); panel.addEventListener("click", function(event){ if(event.target && event.target.tagName === "SUMMARY"){ window.setTimeout(function(){ writeState(panel.open ? "open" : "closed"); }, 0); } }); }; if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded", init); } else { init(); } })();</script>';
 
-        echo '<h2>Search All Entries</h2>';
-        echo '<p class="description">Search across all slots using a selected term or phrase from any populated entity list, plus an optional manual keyword.</p>';
-        echo '<form method="get" action="' . esc_url(admin_url('admin.php')) . '" style="margin-bottom:20px;padding:12px;border:1px solid #dcdcde;background:#fff;width:99%;box-sizing:border-box;">';
+        echo '<details id="pmm_core_search_panel" open style="margin-bottom:20px;width:99%;">';
+        echo '<summary><h2>Search All Entries</h2></summary>';
+        echo '<div style="margin-top:12px;padding:12px;border:1px solid #dcdcde;background:#fff;box-sizing:border-box;">';
+        echo '<form method="get" action="' . esc_url(admin_url('admin.php')) . '" style="margin-bottom:0;">';
         echo '<input type="hidden" name="page" value="' . esc_attr(self::PAGE_SLUG) . '">';
         echo '<input type="hidden" name="pmm_file" value="' . esc_attr($selected) . '">';
-        echo '<p><label for="pmm_search_keyword"><strong>Manual keyword</strong></label><br>';
-        echo '<input id="pmm_search_keyword" type="search" name="pmm_search_keyword" value="' . esc_attr($search_keyword) . '" class="regular-text" style="width:99%;max-width:none;box-sizing:border-box;" placeholder="Optional keyword"></p>';
-        echo '<p><strong>Select from entity lists</strong></p>';
+        echo '<label for="pmm_search_keyword"><strong>Keyword Search</strong></label><br>';
+        echo '<input id="pmm_search_keyword" type="search" name="pmm_search_keyword" value="' . esc_attr($search_keyword) . '" class="regular-text" style="width:99%;max-width:none;box-sizing:border-box;" placeholder="Optional Keyword"></p>';
+        echo '<p><strong>Select from Entity Lists</strong></p>';
         echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;width:99%;margin-bottom:12px;">';
         for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
             if (empty($entity_list_terms[$index])) {
                 continue;
             }
+            $list_label = isset(self::ENTITY_LIST_LABELS[$index]) ? self::ENTITY_LIST_LABELS[$index] : ('Entity List ' . $index);
             echo '<div>';
-            echo '<label for="pmm_search_term_' . esc_attr((string) $index) . '"><strong>Entity List ' . esc_html((string) $index) . '</strong></label><br>';
+            echo '<label for="pmm_search_term_' . esc_attr((string) $index) . '"><strong>' . esc_html($list_label) . '</strong></label><br>';
             echo '<select id="pmm_search_term_' . esc_attr((string) $index) . '" name="pmm_search_term_' . esc_attr((string) $index) . '" class="regular-text" style="margin-top:6px;width:100%;">';
             echo '<option value="">' . esc_html__('Any / none selected', 'pmm-memory-core') . '</option>';
             foreach ($entity_list_terms[$index] as $term) {
@@ -151,7 +185,7 @@ class PMM_Memory_Core {
             echo '</div>';
         }
         echo '</div>';
-        submit_button('Search All Slots', 'primary', 'submit', false);
+        submit_button('Search All', 'primary', 'submit', false);
         echo ' <a class="button button-secondary" href="' . esc_url(add_query_arg(['page' => self::PAGE_SLUG, 'pmm_file' => $selected], admin_url('admin.php'))) . '">Clear Search</a>';
         echo '</form>';
 
@@ -213,8 +247,13 @@ class PMM_Memory_Core {
             }
         }
 
+        echo '</div>';
+        echo '</details>';
+        echo '<script>(function(){ var init=function(){ var panel=document.getElementById("pmm_core_search_panel"); if(!panel){ return; } var key="pmm_core_search_panel_open"; var cookieName=key + "="; var readState=function(){ try{ if(window.localStorage){ var value=window.localStorage.getItem(key); if(value==="open" || value==="closed"){ return value; } } }catch(e){} var cookie=document.cookie ? document.cookie.split(";") : []; for(var i=0;i<cookie.length;i++){ var c=cookie[i].trim(); if(c.indexOf(cookieName)===0){ var cv=c.substring(cookieName.length); if(cv==="open" || cv==="closed"){ return cv; } } } return null; }; var writeState=function(value){ try{ if(window.localStorage){ window.localStorage.setItem(key, value); } }catch(e){} document.cookie=key + "=" + value + "; path=/; max-age=31536000; SameSite=Lax"; }; var stored=readState(); if(stored==="closed"){ panel.open=false; } else if(stored==="open"){ panel.open=true; } writeState(panel.open ? "open" : "closed"); panel.addEventListener("toggle", function(){ writeState(panel.open ? "open" : "closed"); }); panel.addEventListener("click", function(event){ if(event.target && event.target.tagName === "SUMMARY"){ window.setTimeout(function(){ writeState(panel.open ? "open" : "closed"); }, 0); } }); }; if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded", init); } else { init(); } })();</script>';
+
         echo '<h2>' . esc_html($this->file_labels[$selected]) . ' (' . esc_html((string) $entry_count) . ' entries)</h2>';
         echo '<p class="description">Each blank-line-separated entry is stored individually and reassembled here for editing and download.</p>';
+        $revisions = $this->get_file_revisions($selected);
 
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-bottom:16px;">';
         wp_nonce_field('pmm_core_save_text');
@@ -228,13 +267,32 @@ class PMM_Memory_Core {
         echo '</p>';
         echo '</form>';
         echo '<script>document.addEventListener("DOMContentLoaded", function(){ var btn=document.getElementById("pmm-copy-main-content"); var area=document.getElementById("pmm-main-content"); var status=document.getElementById("pmm-copy-main-content-status"); if(!btn||!area){return;} btn.addEventListener("click", function(){ var setStatus=function(message){ if(status){ status.textContent=message; } }; var clearStatus=function(){ if(status){ setTimeout(function(){ status.textContent=""; }, 1500); } }; if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(area.value).then(function(){ setStatus("Copied"); clearStatus(); }).catch(function(){ setStatus("Copy failed"); clearStatus(); }); return; } area.focus(); area.select(); try{ var ok=document.execCommand("copy"); setStatus(ok ? "Copied" : "Copy failed"); }catch(err){ setStatus("Copy failed"); } clearStatus(); }); });</script>';
+        if (!empty($revisions)) {
+            echo '<div style="margin:8px 0 12px 0;padding:10px;border:1px solid #dcdcde;background:#fff;width:99%;box-sizing:border-box;">';
+            echo '<p style="margin:0 0 8px 0;"><strong>Recent Revisions for ' . esc_html($this->file_labels[$selected]) . '</strong> <span class="description">(keeps latest ' . esc_html((string) self::REVISION_LIMIT) . ' snapshots automatically)</span></p>';
+            foreach ($revisions as $rev_index => $revision) {
+                if (!is_array($revision) || !isset($revision['saved_at'])) {
+                    continue;
+                }
+                $saved_at = (int) $revision['saved_at'];
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:flex;align-items:center;gap:8px;margin:0 0 6px 0;">';
+                wp_nonce_field('pmm_core_restore_revision');
+                echo '<input type="hidden" name="action" value="pmm_core_restore_revision">';
+                echo '<input type="hidden" name="pmm_file" value="' . esc_attr($selected) . '">';
+                echo '<input type="hidden" name="pmm_revision_index" value="' . esc_attr((string) $rev_index) . '">';
+                echo '<span>' . esc_html('Revision ' . ((int) $rev_index + 1) . ': ' . wp_date('Y-m-d H:i:s', $saved_at)) . '</span>';
+                submit_button('Restore', 'secondary', 'submit', false, ['onclick' => "return confirm('Restore this revision for the current slot?');", 'style' => 'margin:0;']);
+                echo '</form>';
+            }
+            echo '</div>';
+        }
 
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" enctype="multipart/form-data" style="margin-bottom:12px;">';
         wp_nonce_field('pmm_core_upload_file');
         echo '<input type="hidden" name="action" value="pmm_core_upload_file">';
         echo '<input type="hidden" name="pmm_file" value="' . esc_attr($selected) . '">';
         echo '<input type="file" name="pmm_upload" accept=".txt,.md" required> ';
-        submit_button('Upload File Into This Slot', 'secondary', 'submit', false);
+        submit_button('Upload File Into ' . esc_html($this->file_labels[$selected]), 'secondary', 'submit', false);
         echo '</form>';
 
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline-block; margin-right:8px;">';
@@ -248,7 +306,7 @@ class PMM_Memory_Core {
         wp_nonce_field('pmm_core_clear_file');
         echo '<input type="hidden" name="action" value="pmm_core_clear_file">';
         echo '<input type="hidden" name="pmm_file" value="' . esc_attr($selected) . '">';
-        submit_button('Clear This Slot', 'delete', 'submit', false, ['onclick' => "return confirm('Clear this file slot?');"]);
+        submit_button('Clear ' . esc_html($this->file_labels[$selected]), 'delete', 'submit', false, ['onclick' => "return confirm('Clear " . esc_js($this->file_labels[$selected]) . "?');"]);
         echo '</form>';
 
         echo '</div>';
@@ -260,6 +318,11 @@ class PMM_Memory_Core {
 
         $file_key = $this->posted_file_key();
         $content = isset($_POST['pmm_content']) ? wp_unslash((string) $_POST['pmm_content']) : '';
+        $current = $this->get_file_content($file_key);
+
+        if (!$this->contents_are_equivalent($current, $content)) {
+            $this->save_revision_snapshot($file_key, $current);
+        }
 
         $this->upsert_file_content($file_key, $content);
         $this->redirect_with_notice($file_key, 'saved');
@@ -269,10 +332,21 @@ class PMM_Memory_Core {
         $this->require_admin();
         check_admin_referer('pmm_core_save_entity_lists');
 
+        $current = $this->get_entity_lists();
+        $updated = [];
+
         for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
             $field = 'pmm_entity_list_' . $index;
             $value = isset($_POST[$field]) ? wp_unslash((string) $_POST[$field]) : '';
-            update_option($this->entity_list_option_key($index), $this->normalize_entity_list_text($value), false);
+            $updated[$index] = $this->normalize_entity_list_text($value);
+        }
+
+        if (!$this->entity_lists_are_equivalent($current, $updated)) {
+            $this->save_entity_list_revision_snapshot($current);
+        }
+
+        for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
+            update_option($this->entity_list_option_key($index), $updated[$index], false);
         }
 
         $file_key = isset($_POST['pmm_file']) ? $this->normalize_file_key(wp_unslash((string) $_POST['pmm_file'])) : 'lore';
@@ -285,11 +359,13 @@ class PMM_Memory_Core {
 
         if (isset($_POST['pmm_review_action_delete'])) {
             $ids = isset($_POST['pmm_delete_ids']) ? (array) wp_unslash($_POST['pmm_delete_ids']) : [];
+            $this->save_revisions_for_entry_ids($ids);
             $deleted = $this->delete_entries($ids);
             $this->redirect_search_with_notice($deleted > 0 ? 'search_results_deleted' : 'search_result_missing');
         }
 
         $rows = isset($_POST['pmm_search_rows']) ? (array) wp_unslash($_POST['pmm_search_rows']) : [];
+        $this->save_revisions_for_entry_ids(array_keys((array) $rows));
         $saved = $this->update_entries_bulk($rows);
         $this->redirect_search_with_notice($saved > 0 ? 'search_results_saved' : 'search_result_missing');
     }
@@ -314,7 +390,22 @@ class PMM_Memory_Core {
             $this->redirect_with_notice($file_key, 'upload_read_failed');
         }
 
-        $this->upsert_file_content($file_key, (string) $content);
+        $existing_content = $this->get_file_content($file_key);
+        $uploaded_content = trim((string) $content);
+        $combined_content = $existing_content;
+        if ($uploaded_content !== '') {
+            if (trim($existing_content) !== '') {
+                $combined_content = rtrim($existing_content) . "\n\n" . $uploaded_content;
+            } else {
+                $combined_content = $uploaded_content;
+            }
+        }
+
+        if (!$this->contents_are_equivalent($existing_content, $combined_content)) {
+            $this->save_revision_snapshot($file_key, $existing_content);
+        }
+
+        $this->upsert_file_content($file_key, $combined_content);
         $this->redirect_with_notice($file_key, 'uploaded');
     }
 
@@ -342,8 +433,55 @@ class PMM_Memory_Core {
         check_admin_referer('pmm_core_clear_file');
 
         $file_key = $this->posted_file_key();
+        $current = $this->get_file_content($file_key);
+        if (trim($current) !== '') {
+            $this->save_revision_snapshot($file_key, $current);
+        }
         $this->upsert_file_content($file_key, '');
         $this->redirect_with_notice($file_key, 'cleared');
+    }
+
+    public function handle_restore_revision() {
+        $this->require_admin();
+        check_admin_referer('pmm_core_restore_revision');
+
+        $target = isset($_POST['pmm_revision_target']) ? sanitize_key((string) wp_unslash($_POST['pmm_revision_target'])) : 'file';
+        $index = isset($_POST['pmm_revision_index']) ? (int) wp_unslash((string) $_POST['pmm_revision_index']) : -1;
+        if ($target === 'entity_lists') {
+            $revisions = $this->get_entity_list_revisions();
+            if ($index < 0 || !isset($revisions[$index]) || !is_array($revisions[$index]) || !isset($revisions[$index]['lists'])) {
+                $this->redirect_with_notice(isset($_POST['pmm_file']) ? $this->normalize_file_key(wp_unslash((string) $_POST['pmm_file'])) : 'lore', 'revision_missing');
+            }
+
+            $current = $this->get_entity_lists();
+            $restore_lists = (array) $revisions[$index]['lists'];
+            if (!$this->entity_lists_are_equivalent($current, $restore_lists)) {
+                $this->save_entity_list_revision_snapshot($current);
+            }
+
+            for ($i = 1; $i <= self::ENTITY_LIST_COUNT; $i++) {
+                $value = isset($restore_lists[$i]) ? (string) $restore_lists[$i] : '';
+                update_option($this->entity_list_option_key($i), $this->normalize_entity_list_text($value), false);
+            }
+
+            $this->redirect_with_notice(isset($_POST['pmm_file']) ? $this->normalize_file_key(wp_unslash((string) $_POST['pmm_file'])) : 'lore', 'revision_restored');
+        }
+
+        $file_key = $this->posted_file_key();
+        $revisions = $this->get_file_revisions($file_key);
+
+        if ($index < 0 || !isset($revisions[$index]) || !is_array($revisions[$index]) || !isset($revisions[$index]['content'])) {
+            $this->redirect_with_notice($file_key, 'revision_missing');
+        }
+
+        $current = $this->get_file_content($file_key);
+        $restore_content = (string) $revisions[$index]['content'];
+        if (!$this->contents_are_equivalent($current, $restore_content)) {
+            $this->save_revision_snapshot($file_key, $current);
+        }
+
+        $this->upsert_file_content($file_key, $restore_content);
+        $this->redirect_with_notice($file_key, 'revision_restored');
     }
 
     private function require_admin() {
@@ -360,6 +498,11 @@ class PMM_Memory_Core {
     private function normalize_file_key($value) {
         $value = sanitize_key((string) $value);
         return isset($this->file_labels[$value]) ? $value : 'lore';
+    }
+
+    private function stored_file_key() {
+        $raw = isset($_COOKIE['pmm_core_selected_file']) ? wp_unslash((string) $_COOKIE['pmm_core_selected_file']) : 'lore';
+        return $this->normalize_file_key(rawurldecode((string) $raw));
     }
 
     private function table_name() {
@@ -553,6 +696,96 @@ class PMM_Memory_Core {
         return $entries;
     }
 
+    private function contents_are_equivalent($a, $b) {
+        return $this->split_entries($a) === $this->split_entries($b);
+    }
+
+    private function revision_option_key($file_key) {
+        return 'pmm_core_revisions_' . $this->normalize_file_key($file_key);
+    }
+
+    private function get_file_revisions($file_key) {
+        $raw = get_option($this->revision_option_key($file_key), []);
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $valid = [];
+        foreach ($raw as $item) {
+            if (!is_array($item) || !isset($item['content']) || !isset($item['saved_at'])) {
+                continue;
+            }
+            $valid[] = [
+                'content' => (string) $item['content'],
+                'saved_at' => (int) $item['saved_at'],
+            ];
+        }
+
+        return array_slice($valid, 0, self::REVISION_LIMIT);
+    }
+
+    private function save_revision_snapshot($file_key, $content) {
+        $file_key = $this->normalize_file_key($file_key);
+        $content = (string) $content;
+        if (trim($content) === '') {
+            return;
+        }
+
+        $revisions = $this->get_file_revisions($file_key);
+        if (!empty($revisions) && $this->contents_are_equivalent($revisions[0]['content'], $content)) {
+            return;
+        }
+
+        array_unshift($revisions, [
+            'content' => $content,
+            'saved_at' => time(),
+        ]);
+
+        update_option($this->revision_option_key($file_key), array_slice($revisions, 0, self::REVISION_LIMIT), false);
+    }
+
+    private function save_revisions_for_entry_ids($entry_ids) {
+        $file_keys = $this->file_keys_for_entry_ids($entry_ids);
+        foreach ($file_keys as $file_key) {
+            $this->save_revision_snapshot($file_key, $this->get_file_content($file_key));
+        }
+    }
+
+    private function file_keys_for_entry_ids($entry_ids) {
+        global $wpdb;
+        $this->ensure_storage_ready();
+
+        $ids = [];
+        foreach ((array) $entry_ids as $entry_id) {
+            $id = (int) $entry_id;
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+        $ids = array_values(array_unique($ids));
+        if (empty($ids)) {
+            return [];
+        }
+
+        $table = $this->table_name();
+        $placeholders = implode(',', array_fill(0, count($ids), '%d'));
+        $sql = "SELECT DISTINCT file_key FROM {$table} WHERE id IN ({$placeholders})";
+        $rows = $wpdb->get_col($wpdb->prepare($sql, ...$ids));
+        if (!is_array($rows) || empty($rows)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            $key = $this->normalize_file_key((string) $row);
+            if ($key !== '') {
+                $out[] = $key;
+            }
+        }
+
+        return array_values(array_unique($out));
+    }
+
     private function get_entity_lists() {
         $lists = [];
         for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
@@ -564,6 +797,81 @@ class PMM_Memory_Core {
 
     private function entity_list_option_key($index) {
         return 'pmm_core_entity_list_' . max(1, (int) $index);
+    }
+
+    private function entity_list_revision_option_key() {
+        return 'pmm_core_entity_list_revisions';
+    }
+
+    private function get_entity_list_revisions() {
+        $raw = get_option($this->entity_list_revision_option_key(), []);
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $valid = [];
+        foreach ($raw as $item) {
+            if (!is_array($item) || !isset($item['lists']) || !isset($item['saved_at'])) {
+                continue;
+            }
+
+            $lists = [];
+            for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
+                $lists[$index] = isset($item['lists'][$index]) ? (string) $item['lists'][$index] : '';
+            }
+
+            $valid[] = [
+                'lists' => $lists,
+                'saved_at' => (int) $item['saved_at'],
+            ];
+        }
+
+        return array_slice($valid, 0, self::REVISION_LIMIT);
+    }
+
+    private function save_entity_list_revision_snapshot($lists) {
+        $current = [];
+        for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
+            $current[$index] = isset($lists[$index]) ? $this->normalize_entity_list_text($lists[$index]) : '';
+        }
+
+        if ($this->entity_lists_are_empty($current)) {
+            return;
+        }
+
+        $revisions = $this->get_entity_list_revisions();
+        if (!empty($revisions) && $this->entity_lists_are_equivalent($revisions[0]['lists'], $current)) {
+            return;
+        }
+
+        array_unshift($revisions, [
+            'lists' => $current,
+            'saved_at' => time(),
+        ]);
+
+        update_option($this->entity_list_revision_option_key(), array_slice($revisions, 0, self::REVISION_LIMIT), false);
+    }
+
+    private function entity_lists_are_equivalent($a, $b) {
+        for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
+            $left = isset($a[$index]) ? $this->normalize_entity_list_text($a[$index]) : '';
+            $right = isset($b[$index]) ? $this->normalize_entity_list_text($b[$index]) : '';
+            if ($left !== $right) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function entity_lists_are_empty($lists) {
+        for ($index = 1; $index <= self::ENTITY_LIST_COUNT; $index++) {
+            if (trim(isset($lists[$index]) ? (string) $lists[$index] : '') !== '') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function normalize_entity_list_text($text) {
@@ -588,15 +896,20 @@ class PMM_Memory_Core {
         }
 
         $terms = [];
+        $seen = [];
         foreach ($parts as $part) {
             $term = trim((string) $part);
             if ($term !== '') {
-                $terms[] = $term;
+                $key = function_exists('mb_strtolower') ? mb_strtolower($term, 'UTF-8') : strtolower($term);
+                if (!isset($seen[$key])) {
+                    $terms[] = $term;
+                    $seen[$key] = true;
+                }
             }
         }
 
         natcasesort($terms);
-        return array_values(array_unique($terms));
+        return array_values($terms);
     }
 
     private function get_selected_search_terms($entity_list_terms) {
