@@ -38,6 +38,7 @@ class PMM_Memory_Core {
         add_action('admin_post_pmm_core_save_text', [$this, 'handle_save_text']);
         add_action('admin_post_pmm_core_save_entity_lists', [$this, 'handle_save_entity_lists']);
         add_action('admin_post_pmm_core_review_search_results', [$this, 'handle_review_search_results']);
+        add_action('admin_post_pmm_core_save_file_search_replace', [$this, 'handle_save_file_search_replace']);
         add_action('admin_post_pmm_core_upload_file', [$this, 'handle_upload_file']);
         add_action('admin_post_pmm_core_download_file', [$this, 'handle_download_file']);
         add_action('admin_post_pmm_core_clear_file', [$this, 'handle_clear_file']);
@@ -92,6 +93,9 @@ class PMM_Memory_Core {
                 'search_results_saved' => 'Visible search result edits saved.',
                 'search_results_deleted' => 'Selected search result entries deleted.',
                 'search_result_missing' => 'Search result entry could not be found.',
+                'search_replace_saved' => 'Search and replace changes saved.',
+                'search_replace_no_matches' => 'No search and replace matches were found in the selected file.',
+                'search_replace_missing' => 'Search and replace entry could not be found.',
                 'upload_missing' => 'No file was uploaded.',
                 'upload_invalid' => 'Invalid upload type. Use .txt or .md.',
                 'upload_read_failed' => 'Could not read uploaded file.',
@@ -251,6 +255,62 @@ class PMM_Memory_Core {
         echo '</details>';
         echo '<script>(function(){ var init=function(){ var panel=document.getElementById("pmm_core_search_panel"); if(!panel){ return; } var key="pmm_core_search_panel_open"; var cookieName=key + "="; var readState=function(){ try{ if(window.localStorage){ var value=window.localStorage.getItem(key); if(value==="open" || value==="closed"){ return value; } } }catch(e){} var cookie=document.cookie ? document.cookie.split(";") : []; for(var i=0;i<cookie.length;i++){ var c=cookie[i].trim(); if(c.indexOf(cookieName)===0){ var cv=c.substring(cookieName.length); if(cv==="open" || cv==="closed"){ return cv; } } } return null; }; var writeState=function(value){ try{ if(window.localStorage){ window.localStorage.setItem(key, value); } }catch(e){} document.cookie=key + "=" + value + "; path=/; max-age=31536000; SameSite=Lax"; }; var stored=readState(); if(stored==="closed"){ panel.open=false; } else if(stored==="open"){ panel.open=true; } writeState(panel.open ? "open" : "closed"); panel.addEventListener("toggle", function(){ writeState(panel.open ? "open" : "closed"); }); panel.addEventListener("click", function(event){ if(event.target && event.target.tagName === "SUMMARY"){ window.setTimeout(function(){ writeState(panel.open ? "open" : "closed"); }, 0); } }); }; if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded", init); } else { init(); } })();</script>';
 
+        $replace_find = isset($_GET['pmm_replace_find']) ? trim((string) wp_unslash($_GET['pmm_replace_find'])) : '';
+        $replace_with = isset($_GET['pmm_replace_with']) ? (string) wp_unslash($_GET['pmm_replace_with']) : '';
+        $replace_results = [];
+        if ($replace_find !== '') {
+            $replace_results = $this->search_replace_entries($selected, $replace_find, $replace_with);
+        }
+
+        echo '<details id="pmm_core_search_replace_panel" ' . ($replace_find !== '' ? 'open' : '') . ' style="margin-bottom:20px;width:99%;">';
+        echo '<summary><h2>Search and Replace</h2></summary>';
+        echo '<div style="margin-top:12px;padding:12px;border:1px solid #dcdcde;background:#fff;box-sizing:border-box;">';
+        echo '<p class="description" style="margin-top:0;">Literal text replacement in the selected file. Matching rows are previewed below and can be edited before saving.</p>';
+        echo '<form method="get" action="' . esc_url(admin_url('admin.php')) . '" style="margin-bottom:12px;">';
+        echo '<input type="hidden" name="page" value="' . esc_attr(self::PAGE_SLUG) . '">';
+        echo '<input type="hidden" name="pmm_file" value="' . esc_attr($selected) . '">';
+        echo '<label for="pmm_replace_find"><strong>Search For</strong></label><br>';
+        echo '<input id="pmm_replace_find" type="search" name="pmm_replace_find" value="' . esc_attr($replace_find) . '" class="regular-text" style="width:99%;max-width:none;box-sizing:border-box;" placeholder="Text to find">';
+        echo '<p style="margin-top:10px;"><label for="pmm_replace_with"><strong>Replace With</strong></label><br>';
+        echo '<input id="pmm_replace_with" type="text" name="pmm_replace_with" value="' . esc_attr($replace_with) . '" class="regular-text" style="width:99%;max-width:none;box-sizing:border-box;" placeholder="Replacement text"></p>';
+        submit_button('Preview Replace', 'primary', 'submit', false);
+        echo ' <a class="button button-secondary" href="' . esc_url(add_query_arg(['page' => self::PAGE_SLUG, 'pmm_file' => $selected], admin_url('admin.php'))) . '">Clear Search and Replace</a>';
+        echo '</form>';
+
+        if ($replace_find !== '') {
+            if (empty($replace_results)) {
+                echo '<p class="description">No matches were found in this file.</p>';
+            } else {
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin:0;">';
+                wp_nonce_field('pmm_core_save_file_search_replace');
+                echo '<input type="hidden" name="action" value="pmm_core_save_file_search_replace">';
+                echo '<input type="hidden" name="pmm_file" value="' . esc_attr($selected) . '">';
+                echo '<input type="hidden" name="pmm_replace_find" value="' . esc_attr($replace_find) . '">';
+                echo '<input type="hidden" name="pmm_replace_with" value="' . esc_attr($replace_with) . '">';
+                echo '<p class="description" style="margin:0 0 8px 0;">Found ' . esc_html((string) count($replace_results)) . ' matching entries in ' . esc_html($this->file_labels[$selected]) . '.</p>';
+                echo '<div style="overflow:auto;width:99%;border:1px solid #dcdcde;background:#fff;">';
+                echo '<table class="widefat striped">';
+                echo '<thead><tr><th style="width:8%;">Entry #</th><th style="width:12%;">Matches</th><th style="width:30%;">Before</th><th>After / Edit</th></tr></thead><tbody>';
+                foreach ($replace_results as $result) {
+                    echo '<tr>';
+                    echo '<td style="vertical-align:top;">' . esc_html((string) $result['entry_index']) . '</td>';
+                    echo '<td style="vertical-align:top;">' . esc_html((string) $result['replacement_count']) . '</td>';
+                    echo '<td style="vertical-align:top;"><pre style="white-space:pre-wrap;margin:0;">' . esc_html($result['original_content']) . '</pre></td>';
+                    echo '<td style="vertical-align:top;"><textarea name="pmm_replace_rows[' . esc_attr((string) $result['id']) . ']" rows="6" class="large-text code" style="width:100%;box-sizing:border-box;">' . esc_textarea($result['preview_content']) . '</textarea></td>';
+                    echo '</tr>';
+                }
+                echo '</tbody></table></div>';
+                echo '<p style="margin:8px 0 0 0;">';
+                submit_button('Save Replacements', 'secondary', 'submit', false);
+                echo '</p>';
+                echo '</form>';
+            }
+        }
+
+        echo '</div>';
+        echo '</details>';
+        echo '<script>(function(){ var init=function(){ var panel=document.getElementById("pmm_core_search_replace_panel"); if(!panel){ return; } var key="pmm_core_search_replace_panel_open"; var cookieName=key + "="; var readState=function(){ try{ if(window.localStorage){ var value=window.localStorage.getItem(key); if(value==="open" || value==="closed"){ return value; } } }catch(e){} var cookie=document.cookie ? document.cookie.split(";") : []; for(var i=0;i<cookie.length;i++){ var c=cookie[i].trim(); if(c.indexOf(cookieName)===0){ var cv=c.substring(cookieName.length); if(cv==="open" || cv==="closed"){ return cv; } } } return null; }; var writeState=function(value){ try{ if(window.localStorage){ window.localStorage.setItem(key, value); } }catch(e){} document.cookie=key + "=" + value + "; path=/; max-age=31536000; SameSite=Lax"; }; var stored=readState(); if(stored==="closed"){ panel.open=false; } else if(stored==="open"){ panel.open=true; } if(' . ($replace_find !== '' ? 'true' : 'false') . '){ panel.open=true; } writeState(panel.open ? "open" : "closed"); panel.addEventListener("toggle", function(){ writeState(panel.open ? "open" : "closed"); }); panel.addEventListener("click", function(event){ if(event.target && event.target.tagName === "SUMMARY"){ window.setTimeout(function(){ writeState(panel.open ? "open" : "closed"); }, 0); } }); }; if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded", init); } else { init(); } })();</script>';
+
         echo '<h2>' . esc_html($this->file_labels[$selected]) . ' (' . esc_html((string) $entry_count) . ' entries)</h2>';
         echo '<p class="description">Each blank-line-separated entry is stored individually and reassembled here for editing and download.</p>';
         $revisions = $this->get_file_revisions($selected);
@@ -368,6 +428,34 @@ class PMM_Memory_Core {
         $this->save_revisions_for_entry_ids(array_keys((array) $rows));
         $saved = $this->update_entries_bulk($rows);
         $this->redirect_search_with_notice($saved > 0 ? 'search_results_saved' : 'search_result_missing');
+    }
+
+    public function handle_save_file_search_replace() {
+        $this->require_admin();
+        check_admin_referer('pmm_core_save_file_search_replace');
+
+        $file_key = $this->posted_file_key();
+        $find = isset($_POST['pmm_replace_find']) ? trim((string) wp_unslash($_POST['pmm_replace_find'])) : '';
+        $replace_with = isset($_POST['pmm_replace_with']) ? (string) wp_unslash($_POST['pmm_replace_with']) : '';
+        $rows = isset($_POST['pmm_replace_rows']) ? (array) wp_unslash($_POST['pmm_replace_rows']) : [];
+
+        if ($find === '' || empty($rows)) {
+            $this->redirect_with_notice($file_key, 'search_replace_missing');
+        }
+
+        $this->save_revisions_for_entry_ids(array_keys($rows));
+        $saved = $this->update_entries_bulk($rows);
+
+        $args = [
+            'page' => self::PAGE_SLUG,
+            'pmm_file' => $file_key,
+            'pmm_replace_find' => $find,
+            'pmm_replace_with' => $replace_with,
+            'pmm_notice' => $saved > 0 ? 'search_replace_saved' : 'search_replace_no_matches',
+        ];
+
+        wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
+        exit;
     }
 
     public function handle_upload_file() {
@@ -553,6 +641,20 @@ class PMM_Memory_Core {
             "SELECT COUNT(*) FROM {$table} WHERE file_key = %s",
             $file_key
         ));
+    }
+
+    private function get_file_entries($file_key) {
+        global $wpdb;
+        $this->ensure_storage_ready();
+        $table = $this->table_name();
+        $file_key = $this->normalize_file_key($file_key);
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, file_key, entry_index, content FROM {$table} WHERE file_key = %s ORDER BY entry_index ASC, id ASC",
+            $file_key
+        ), ARRAY_A);
+
+        return is_array($rows) ? $rows : [];
     }
 
     private function upsert_file_content($file_key, $content) {
@@ -1024,6 +1126,47 @@ class PMM_Memory_Core {
                 'entry_index' => isset($row['entry_index']) ? (int) $row['entry_index'] : 0,
                 'content' => $content,
                 'matched_terms' => $matched_terms,
+            ];
+        }
+
+        return $results;
+    }
+
+    private function search_replace_entries($file_key, $find, $replace_with) {
+        $file_key = $this->normalize_file_key($file_key);
+        $find = (string) $find;
+        if ($find === '') {
+            return [];
+        }
+
+        $rows = $this->get_file_entries($file_key);
+        if (empty($rows)) {
+            return [];
+        }
+
+        $results = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $content = isset($row['content']) ? (string) $row['content'] : '';
+            if ($content === '') {
+                continue;
+            }
+
+            $replacement_count = 0;
+            $preview = str_replace($find, (string) $replace_with, $content, $replacement_count);
+            if ($replacement_count < 1) {
+                continue;
+            }
+
+            $results[] = [
+                'id' => isset($row['id']) ? (int) $row['id'] : 0,
+                'entry_index' => isset($row['entry_index']) ? (int) $row['entry_index'] : 0,
+                'original_content' => $content,
+                'preview_content' => $preview,
+                'replacement_count' => $replacement_count,
             ];
         }
 
